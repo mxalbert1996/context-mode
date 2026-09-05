@@ -17,6 +17,28 @@ export default {
 No `tui` marker is set on the main export (a boolean `tui: true` would make the
 plugin invalid for server loading).
 
+## How opencode v2 loads the plugin
+
+Verified against opencode 2.0 preview (`v0.0.0-beta-19135`):
+
+- **Config sources**: the server reads plugin entries from `opencode.json`
+  (project or global) under both `plugin` and `plugins` keys. The global
+  `cli.json` is a terminal-client config and is **not** a server plugin source.
+- **Entry resolution**: v2 resolves a `server` entry per plugin:
+  - package-name form (`"plugins": ["context-mode"]`): resolves the package's
+    `./server` export subpath → provided via `exports["./server"]` in
+    `package.json`.
+  - directory-path form (`"plugins": ["/path/to/repo"]`): resolves a
+    root-level `server.*` module inside that directory → provided by
+    `server.js` at the repo root (re-exports the plugin default export).
+  - drop-in form: files/directories under `<config>/plugins/` are auto-loaded;
+    a plain `.js` file is used directly as the server module.
+  If no `server` entry resolves, v2 **silently skips** the plugin (no log),
+  which is easy to misdiagnose — check for `msg="loading plugin"` in
+  `--print-logs` output to confirm loading.
+- The resolved module's default export must be the plugin object
+  (`{ id, setup, ... }`) — the same dual export works for both hosts.
+
 ## How version detection works
 
 There is no runtime version flag; detection is implicit in which entry the host

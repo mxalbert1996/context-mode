@@ -769,3 +769,269 @@ describe("OpenCodeAdapter for KiloCode", () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────
+// v2 compatibility — config keys (plugin/plugins), legacy MCP
+// removal policy, and honest capability claims
+// ─────────────────────────────────────────────────────────
+
+describe("OpenCodeAdapter — v2 config compatibility", () => {
+  describe("capability honesty", () => {
+    it("default constructor keeps v1 capability claims (unchanged behavior)", () => {
+      const a = new OpenCodeAdapter();
+      expect(a.capabilities.sessionStart).toBe(true);
+      expect(a.capabilities.canInjectSessionContext).toBe(true);
+      expect(a.capabilities.preCompact).toBe(true);
+      expect(a.capabilities.preToolUse).toBe(true);
+      expect(a.capabilities.postToolUse).toBe(true);
+    });
+
+    it("reports degraded capabilities when constructed with degradation options", () => {
+      const a = new OpenCodeAdapter("opencode", {
+        sessionContextDegraded: true,
+        preCompactDegraded: true,
+      });
+      expect(a.capabilities.sessionStart).toBe(false);
+      expect(a.capabilities.canInjectSessionContext).toBe(false);
+      expect(a.capabilities.preCompact).toBe(false);
+      // Tool execution hooks are still claimed — they gate activation itself
+      expect(a.capabilities.preToolUse).toBe(true);
+      expect(a.capabilities.postToolUse).toBe(true);
+    });
+
+    it("markCapabilityDegraded flips reported capabilities at runtime", () => {
+      const a = new OpenCodeAdapter();
+      expect(a.capabilities.sessionStart).toBe(true);
+      a.markCapabilityDegraded("sessionStart");
+      a.markCapabilityDegraded("canInjectSessionContext");
+      a.markCapabilityDegraded("preCompact");
+      expect(a.capabilities.sessionStart).toBe(false);
+      expect(a.capabilities.canInjectSessionContext).toBe(false);
+      expect(a.capabilities.preCompact).toBe(false);
+    });
+  });
+
+  describe("configureAllHooks — dual plugin/plugins keys", () => {
+    it("syncs both plugin (v1) and plugins (v2) keys when both exist", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-v2-config-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      const conf = join(home, ".config", "opencode");
+      const file = join(conf, "opencode.json");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      mkdirSync(conf, { recursive: true });
+      writeFileSync(
+        file,
+        JSON.stringify({ plugin: ["old-v1"], plugins: ["old-v2"] }, null, 2) + "\n",
+      );
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.configureAllHooks('/tmp/plugin')))`,
+        ],
+        { cwd: dir, env: env(home), encoding: "utf-8" },
+      );
+
+      expect(run.status).toBe(0);
+      const changes = JSON.parse(run.stdout);
+      expect(changes).toContain("Added context-mode to plugin array");
+      expect(changes).toContain("Added context-mode to plugins array");
+      expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({
+        plugin: ["old-v1", "context-mode"],
+        plugins: ["old-v2", "context-mode"],
+      });
+
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("keeps legacy mcp.context-mode when only the v2 plugins key registers context-mode (native tools unconfirmed)", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-v2-config-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      const conf = join(home, ".config", "opencode");
+      const file = join(conf, "opencode.json");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      mkdirSync(conf, { recursive: true });
+      writeFileSync(
+        file,
+        JSON.stringify(
+          {
+            plugins: [],
+            mcp: {
+              "context-mode": { type: "local", command: ["context-mode"] },
+              other: { type: "local", command: ["other"] },
+            },
+          },
+          null,
+          2,
+        ) + "\n",
+      );
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.configureAllHooks('/tmp/plugin')))`,
+        ],
+        { cwd: dir, env: env(home), encoding: "utf-8" },
+      );
+
+      expect(run.status).toBe(0);
+      const changes = JSON.parse(run.stdout);
+      expect(changes).toContain("Added context-mode to plugins array");
+      expect(changes).toContain(
+        "Kept legacy context-mode MCP block (v2 native tool registration unconfirmed)",
+      );
+      // MCP fallback preserved — v2 native tool registration is not confirmed
+      expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({
+        plugins: ["context-mode"],
+        mcp: {
+          "context-mode": { type: "local", command: ["context-mode"] },
+          other: { type: "local", command: ["other"] },
+        },
+      });
+
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("readSettings accepts a v2 plugins-only registration", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-v2-config-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      const conf = join(home, ".config", "opencode");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      mkdirSync(conf, { recursive: true });
+      writeFileSync(join(conf, "opencode.json"), JSON.stringify({ plugins: ["other"] }, null, 2) + "\n");
+      writeFileSync(
+        resolve(dir, "opencode.json"),
+        JSON.stringify({ plugins: ["context-mode"] }, null, 2) + "\n",
+      );
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();const s=a.readSettings();console.log(JSON.stringify({settings:s,path:a.settingsPath}))`,
+        ],
+        { cwd: dir, env: env(home), encoding: "utf-8" },
+      );
+
+      expect(run.status).toBe(0);
+      const out = JSON.parse(run.stdout);
+      // The project config holding the v2 registration is selected as authoritative
+      expect(out.path).toContain(join("project", "opencode.json"));
+      expect(out.settings).toEqual({ plugins: ["context-mode"] });
+
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("validateHooks passes plugin registration for a v2 plugins-only config", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-v2-config-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "opencode.json"),
+        JSON.stringify({ plugins: ["context-mode"] }, null, 2) + "\n",
+      );
+
+      const prevHome = process.env.HOME;
+      const prevUserProfile = process.env.USERPROFILE;
+      Object.assign(process.env, env(home));
+      const cwd = process.cwd();
+      process.chdir(dir);
+      try {
+        const results = new OpenCodeAdapter().validateHooks("/tmp/plugin");
+        const pluginCheck = results.find((r) => r.check === "Plugin registration");
+        expect(pluginCheck.status).toBe("pass");
+        expect(pluginCheck.message).toContain("context-mode found in plugin array");
+      } finally {
+        process.chdir(cwd);
+        if (prevHome !== undefined) process.env.HOME = prevHome;
+        else delete process.env.HOME;
+        if (prevUserProfile !== undefined) process.env.USERPROFILE = prevUserProfile;
+        else delete process.env.USERPROFILE;
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("validateHooks reports legacy mcp as retained (not redundant) for a v2-only config", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-v2-config-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "opencode.json"),
+        JSON.stringify(
+          {
+            plugins: ["context-mode"],
+            mcp: { "context-mode": { type: "local", command: ["context-mode"] } },
+          },
+          null,
+          2,
+        ) + "\n",
+      );
+
+      const prevHome = process.env.HOME;
+      const prevUserProfile = process.env.USERPROFILE;
+      Object.assign(process.env, env(home));
+      const cwd = process.cwd();
+      process.chdir(dir);
+      try {
+        const results = new OpenCodeAdapter().validateHooks("/tmp/plugin");
+        const legacy = results.find((r) => r.check === "Legacy MCP registration");
+        expect(legacy.status).toBe("pass");
+        expect(legacy.message).toContain("retained as tool fallback");
+        expect(legacy.message).toContain("unconfirmed");
+      } finally {
+        process.chdir(cwd);
+        if (prevHome !== undefined) process.env.HOME = prevHome;
+        else delete process.env.HOME;
+        if (prevUserProfile !== undefined) process.env.USERPROFILE = prevUserProfile;
+        else delete process.env.USERPROFILE;
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("validateHooks reports the SessionStart surrogate as unavailable when session context is degraded", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-v2-config-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "opencode.json"),
+        JSON.stringify({ plugin: ["context-mode"] }, null, 2) + "\n",
+      );
+
+      const prevHome = process.env.HOME;
+      const prevUserProfile = process.env.USERPROFILE;
+      Object.assign(process.env, env(home));
+      const cwd = process.cwd();
+      process.chdir(dir);
+      try {
+        const results = new OpenCodeAdapter("opencode", {
+          sessionContextDegraded: true,
+          preCompactDegraded: true,
+        }).validateHooks("/tmp/plugin");
+        const sessionStart = results.find((r) => r.check === "SessionStart hook");
+        expect(sessionStart.status).toBe("warn");
+        expect(sessionStart.message).toContain("unavailable");
+      } finally {
+        process.chdir(cwd);
+        if (prevHome !== undefined) process.env.HOME = prevHome;
+        else delete process.env.HOME;
+        if (prevUserProfile !== undefined) process.env.USERPROFILE = prevUserProfile;
+        else delete process.env.USERPROFILE;
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+});

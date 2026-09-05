@@ -21,13 +21,46 @@ import { existsSync, mkdirSync, rmSync, rmdirSync, readdirSync, unlinkSync, open
 
 /**
  * Guard for actions that redirect to MCP tools (#230).
- * If MCP server isn't ready, returns null (passthrough) instead of the
- * redirect action — prevents agent from getting stuck when MCP tools
+ * If the ctx_* tools are NOT reachable, returns null (passthrough) instead
+ * of the redirect action — prevents agent from getting stuck when MCP tools
  * are unavailable. Applies to deny and modify actions that mention MCP alternatives.
+ *
+ * Availability = EITHER the MCP readiness sentinel (v1: the plugin always
+ * runs the MCP server) OR the in-process NATIVE registration signal
+ * (opencode v2: the plugin registers ctx_* tools via ctx.tool.transform).
+ * Caller-level suppression (mcpToolsAvailable=false, e.g. subagent
+ * contexts) is preserved — the flag only extends the availability probe,
+ * never overrides an explicit "not available" from the caller.
+ *
+ * Process-local by design: the CLI hook processes (hooks/pretooluse.mjs)
+ * never set the native flag, so every non-plugin platform keeps gating
+ * purely on isMCPReady() — default behavior unchanged for them.
  */
+let nativeContextModeToolsAvailable = false;
+
+/**
+ * Set the in-process signal that ctx_* tools are reachable WITHOUT an MCP
+ * server (the opencode v2 plugin calls this after a successful native
+ * registration). Pass false on teardown so redirects never point at dead
+ * tools. Ignored by non-plugin hosts (flag stays false → unchanged).
+ */
+export function setContextModeToolsAvailable(available) {
+  nativeContextModeToolsAvailable = available === true;
+}
+
+/** Reset the native availability signal to the default (false) — tests. */
+export function resetContextModeToolsAvailable() {
+  nativeContextModeToolsAvailable = false;
+}
+
+/** Introspection for tests / the plugin's sync helper. */
+export function isContextModeToolsAvailable() {
+  return nativeContextModeToolsAvailable;
+}
+
 function mcpRedirect(result, mcpToolsAvailable = true) {
   if (!mcpToolsAvailable) return null;
-  if (!isMCPReady()) return null;
+  if (!isMCPReady() && !nativeContextModeToolsAvailable) return null;
   return result;
 }
 import { homedir, tmpdir } from "node:os";

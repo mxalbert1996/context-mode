@@ -2,7 +2,7 @@
  * Issue #609 — scripts/postinstall.mjs MUST invoke sweepStaleMcpJson
  * alongside healPluginJsonMcpServers so users broken by Claude Code's
  * auto-update carry-forward (or by an earlier /ctx-upgrade tmpdir leak)
- * self-recover when they run `npm install -g context-mode`.
+ * self-recover when they run `npm install -g @mxalbert/context-mode`.
  *
  * History:
  *   v1.0.122 (#531) — postinstall ran `healMcpJsonArgs` per-entry to

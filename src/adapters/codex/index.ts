@@ -28,6 +28,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { BaseAdapter, resolveContextModeDataRoot } from "../base.js";
+import { PLUGIN_KEY } from "../../package-identity.js";
 import { hashProjectDirCanonical } from "../../session/db.js";
 import { resolveCodexConfigDir } from "./paths.js";
 
@@ -163,7 +164,9 @@ export function probeCodexCliVersion(runCommand: CodexVersionRunner = execFileSy
 
 export function parseCodexContextModePluginRoot(raw: string): string | null {
   for (const line of raw.split(/\r?\n/)) {
-    const match = line.match(/^\s*context-mode@context-mode\s+installed,\s+enabled\s+\S+\s+(.+?)\s*$/);
+    // PLUGIN_KEY has no regex metacharacters ("context-mode@@mxalbert/context-mode")
+    // so it interpolates into the pattern verbatim.
+    const match = line.match(new RegExp(`^\\s*${PLUGIN_KEY}\\s+installed,\\s+enabled\\s+\\S+\\s+(.+?)\\s*$`));
     if (match?.[1]) return match[1].trim();
   }
   return null;
@@ -198,7 +201,7 @@ function hasDeprecatedCodexHooksFeature(raw: string): boolean {
 }
 
 function hasCodexPluginEnabled(raw: string): boolean {
-  const plugin = getTomlSection(raw, 'plugins."context-mode@context-mode"');
+  const plugin = getTomlSection(raw, `plugins."${PLUGIN_KEY}"`);
   return plugin !== null && /^\s*enabled\s*=\s*true\s*(?:#.*)?$/mi.test(plugin);
 }
 
@@ -634,8 +637,8 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       results.push({
         check: "Codex plugin root",
         status: "warn",
-        message: "context-mode@context-mode is enabled, but `codex plugin list` did not report its runtime root",
-        fix: "Restart Codex or verify `codex plugin list` shows context-mode@context-mode installed and enabled",
+        message: `${PLUGIN_KEY} is enabled, but \`codex plugin list\` did not report its runtime root`,
+        fix: `Restart Codex or verify \`codex plugin list\` shows ${PLUGIN_KEY} installed and enabled`,
       });
     }
     if (codexPluginEnabled && !codexPluginHooksAvailable) {
@@ -651,7 +654,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       results.push({
         check: "Standalone MCP duplicate",
         status: "warn",
-        message: "[mcp_servers.context-mode] is still registered while context-mode@context-mode is enabled; Codex may start both plugin and standalone MCP surfaces",
+        message: `[mcp_servers.context-mode] is still registered while ${PLUGIN_KEY} is enabled; Codex may start both plugin and standalone MCP surfaces`,
         fix: "context-mode upgrade (removes the standalone Codex MCP registration when the plugin owns context-mode)",
       });
     }
@@ -662,7 +665,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
         const pluginHookChecks = Object.keys(expected).map((hookName) => ({
           check: `${hookName} hook`,
           status: "pass" as const,
-          message: `${hookName} hook provided by context-mode@context-mode plugin`,
+          message: `${hookName} hook provided by ${PLUGIN_KEY} plugin`,
         }));
         return results.concat(pluginHookChecks);
       }
@@ -704,7 +707,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       ? Object.keys(expected).map((hookName) => ({
         check: `${hookName} hook`,
         status: "pass" as const,
-        message: `${hookName} hook provided by context-mode@context-mode plugin`,
+        message: `${hookName} hook provided by ${PLUGIN_KEY} plugin`,
       }))
       : Object.entries(expected).map(([hookName, entries]) => {
         const actualEntries = hookConfig.config.hooks?.[hookName];
@@ -769,7 +772,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
         return {
           check: "MCP registration",
           status: "warn",
-          message: "context-mode@context-mode plugin is enabled, but standalone [mcp_servers.context-mode] is also configured",
+          message: `${PLUGIN_KEY} plugin is enabled, but standalone [mcp_servers.context-mode] is also configured`,
           fix: "context-mode upgrade",
         };
       }
@@ -778,7 +781,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
         return {
           check: "MCP registration",
           status: "pass",
-          message: "context-mode@context-mode plugin enabled",
+          message: `${PLUGIN_KEY} plugin enabled`,
         };
       }
 

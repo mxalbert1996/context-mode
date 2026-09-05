@@ -19,7 +19,7 @@ jobs:
           GH_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
         run: |
           # npm total downloads
-          NPM_TOTAL=$(curl -sf "https://api.npmjs.org/downloads/point/2000-01-01:$(date +%Y-%m-%d)/context-mode" | jq -r '.downloads // 0')
+          NPM_TOTAL=$(curl -sf "https://api.npmjs.org/downloads/point/2000-01-01:$(date +%Y-%m-%d)/@mxalbert%2Fcontext-mode" | jq -r '.downloads // 0')
           NPM_TOTAL=${NPM_TOTAL:-0}
 
           # GitHub unique clones (last 14 days) — needs push access, may 403
@@ -64,8 +64,8 @@ jobs:
 
           # Always purge CDN + badge caches
           sleep 5
-          curl -sf "https://purge.jsdelivr.net/gh/mksglu/context-mode@main/stats.json" > /dev/null || true
-          curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fcontext-mode%40main%2Fstats.json&query=%24.message&label=users&cacheSeconds=0" > /dev/null || true
-          curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fcontext-mode%40main%2Fstats.json&query=%24.npm&label=npm&cacheSeconds=0" > /dev/null || true
-          curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fcontext-mode%40main%2Fstats.json&query=%24.marketplace&label=marketplace&cacheSeconds=0" > /dev/null || true
+          curl -sf "https://purge.jsdelivr.net/gh/mxalbert1996/context-mode@main/stats.json" > /dev/null || true
+          curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmxalbert1996%2Fcontext-mode%40main%2Fstats.json&query=%24.message&label=users&cacheSeconds=0" > /dev/null || true
+          curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmxalbert1996%2Fcontext-mode%40main%2Fstats.json&query=%24.npm&label=npm&cacheSeconds=0" > /dev/null || true
+          curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmxalbert1996%2Fcontext-mode%40main%2Fstats.json&query=%24.marketplace&label=marketplace&cacheSeconds=0" > /dev/null || true
           echo "Caches purged"

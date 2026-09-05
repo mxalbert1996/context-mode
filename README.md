@@ -2,7 +2,7 @@
 
 **The other half of the context problem.**
 
-[![users](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fcontext-mode%40main%2Fstats.json&query=%24.message&label=users&color=brightgreen)](https://www.npmjs.com/package/context-mode) [![npm](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fcontext-mode%40main%2Fstats.json&query=%24.npm&label=npm&color=blue)](https://www.npmjs.com/package/context-mode) [![marketplace](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fcontext-mode%40main%2Fstats.json&query=%24.marketplace&label=marketplace&color=blue)](https://github.com/mksglu/context-mode) [![GitHub stars](https://img.shields.io/github/stars/mksglu/context-mode?style=flat&color=yellow)](https://github.com/mksglu/context-mode/stargazers) [![GitHub forks](https://img.shields.io/github/forks/mksglu/context-mode?style=flat&color=blue)](https://github.com/mksglu/context-mode/network/members) [![Last commit](https://img.shields.io/github/last-commit/mksglu/context-mode?color=green)](https://github.com/mksglu/context-mode/commits) [![License: ELv2](https://img.shields.io/badge/License-ELv2-blue.svg)](LICENSE)
+[![users](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmxalbert1996%2Fcontext-mode%40main%2Fstats.json&query=%24.message&label=users&color=brightgreen)](https://www.npmjs.com/package/@mxalbert/context-mode) [![npm](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmxalbert1996%2Fcontext-mode%40main%2Fstats.json&query=%24.npm&label=npm&color=blue)](https://www.npmjs.com/package/@mxalbert/context-mode) [![marketplace](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmxalbert1996%2Fcontext-mode%40main%2Fstats.json&query=%24.marketplace&label=marketplace&color=blue)](https://github.com/mxalbert1996/context-mode) [![GitHub stars](https://img.shields.io/github/stars/mxalbert1996/context-mode?style=flat&color=yellow)](https://github.com/mxalbert1996/context-mode/stargazers) [![GitHub forks](https://img.shields.io/github/forks/mxalbert1996/context-mode?style=flat&color=blue)](https://github.com/mxalbert1996/context-mode/network/members) [![Last commit](https://img.shields.io/github/last-commit/mxalbert1996/context-mode?color=green)](https://github.com/mxalbert1996/context-mode/commits) [![License: ELv2](https://img.shields.io/badge/License-ELv2-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/discord/1478479412700909750?label=Discord&logo=discord&color=5865f2)](https://discord.gg/DCN9jUgN5v)
 [![Hacker News #1](https://img.shields.io/badge/Hacker%20News-%231%20%E2%80%A2%20570%2B%20points-ff6600?logo=ycombinator&logoColor=white)](https://news.ycombinator.com/item?id=47193064)
 
@@ -69,8 +69,8 @@ Platforms are grouped by install complexity. Hook-capable platforms get automati
 **Install:**
 
 ```bash
-/plugin marketplace add mksglu/context-mode
-/plugin install context-mode@context-mode
+/plugin marketplace add mxalbert1996/context-mode
+/plugin install context-mode@@mxalbert/context-mode
 ```
 
 Restart Claude Code (or run `/reload-plugins`).
@@ -114,7 +114,7 @@ After saving, restart Claude Code. The bar shows `$ saved this session · $ save
 <summary>Alternative — MCP-only install (no hooks or slash commands)</summary>
 
 ```bash
-claude mcp add context-mode -- npx -y context-mode
+claude mcp add context-mode -- npx -y @mxalbert/context-mode
 ```
 
 This gives you all 11 MCP tools without automatic routing. The model can still use them — it just won't be nudged to prefer them over raw Bash/Read/WebFetch. Good for trying it out before committing to the full plugin.
@@ -133,7 +133,7 @@ This gives you all 11 MCP tools without automatic routing. The model can still u
 1. Install context-mode globally:
 
    ```bash
-   npm install -g context-mode
+   npm install -g @mxalbert/context-mode
    ```
 
 2. Add the following to `~/.gemini/settings.json`. This single file registers the MCP server and all four hooks:
@@ -206,7 +206,7 @@ Full config reference: [`configs/gemini-cli/settings.json`](configs/gemini-cli/s
 1. Install context-mode globally:
 
    ```bash
-   npm install -g context-mode
+   npm install -g @mxalbert/context-mode
    ```
 
 2. Create `.vscode/mcp.json` in your project root:
@@ -263,7 +263,7 @@ Full hook config including PreCompact: [`configs/vscode-copilot/hooks.json`](con
 1. Install context-mode globally:
 
    ```bash
-   npm install -g context-mode
+   npm install -g @mxalbert/context-mode
    ```
 
 2. Add MCP server via Settings UI: **Settings > Tools > AI Assistant > Model Context Protocol (MCP) > Add Server**:
@@ -312,8 +312,8 @@ Full setup guide: [`docs/jetbrains-copilot.md`](docs/jetbrains-copilot.md)
 **Install — Option A (plugin, one command — recommended):**
 
 ```bash
-npm install -g context-mode                                     # the plugin's MCP server runs the global binary
-copilot plugin install mksglu/context-mode:configs/copilot-cli  # registers MCP + hooks + routing skill
+npm install -g @mxalbert/context-mode                                     # the plugin's MCP server runs the global binary
+copilot plugin install mxalbert1996/context-mode:configs/copilot-cli  # registers MCP + hooks + routing skill
 ```
 
 The bundle's `.mcp.json` pins `CONTEXT_MODE_PLATFORM=copilot-cli`, so context-mode self-identifies as Copilot — `ctx_upgrade` and platform detection resolve `copilot-cli` even when Claude Code is co-installed (whose `~/.claude/` would otherwise win). No `context-mode upgrade` / agent call needed. To try it from a local clone before it lands on the default branch, point Copilot at the bundle directory: `copilot --plugin-dir /path/to/context-mode/configs/copilot-cli`.
@@ -323,7 +323,7 @@ The bundle's `.mcp.json` pins `CONTEXT_MODE_PLATFORM=copilot-cli`, so context-mo
 1. Install context-mode globally:
 
    ```bash
-   npm install -g context-mode
+   npm install -g @mxalbert/context-mode
    ```
 
 2. Register the MCP server with Copilot CLI's built-in command (writes `~/.copilot/mcp-config.json` for you):
@@ -354,13 +354,13 @@ The bundle's `.mcp.json` pins `CONTEXT_MODE_PLATFORM=copilot-cli`, so context-mo
 
 > **Plugins:** Option A above uses Copilot CLI's plugin system, which registers MCP servers (`.mcp.json`), hooks (`hooks.json`), and skills (`skills/`) together — not just skills/agents. The shipped bundle is `configs/copilot-cli/`; `copilot plugin install owner/repo:path` installs it in one command (no clone). Option B is the equivalent without a plugin.
 
-> **Version note:** the hook commands run the **global** `context-mode` (`context-mode hook copilot-cli …`), so they need a context-mode version with Copilot CLI support. On an older global the hooks are inert (no routing/capture) until you upgrade — but they do **not** block your tools (context-mode fails open). Upgrade with `npm install -g context-mode@latest`.
+> **Version note:** the hook commands run the **global** `context-mode` (`context-mode hook copilot-cli …`), so they need a context-mode version with Copilot CLI support. On an older global the hooks are inert (no routing/capture) until you upgrade — but they do **not** block your tools (context-mode fails open). Upgrade with `npm install -g @mxalbert/context-mode@latest`.
 
 **Verify:** In a Copilot CLI session, type `ctx stats`. Context-mode tools should appear and respond. Run `context-mode doctor` to confirm hook + MCP registration.
 
 **Routing:** Automatic via hooks (PreToolUse interception + SessionStart routing block). Auto-detected via MCP `clientInfo.name` (`GitHub Copilot CLI`) or, in a bare shell, a context-mode-written marker (`~/.copilot/mcp-config.json` or `~/.copilot/hooks/context-mode.json`) — not a bare `~/.copilot/` dir, so a co-installed-but-unconfigured Copilot CLI is not mis-detected as context-mode-on-copilot.
 
-See [`docs/platform-support.md`](docs/platform-support.md#github-copilot-cli) for the full reference. Tracking: [#775](https://github.com/mksglu/context-mode/issues/775).
+See [`docs/platform-support.md`](docs/platform-support.md#github-copilot-cli) for the full reference. Tracking: [#775](https://github.com/mxalbert1996/context-mode/issues/775).
 
 </details>
 
@@ -369,7 +369,7 @@ See [`docs/platform-support.md`](docs/platform-support.md#github-copilot-cli) fo
 
 **Prerequisites:** Node.js >= 22.5 (or Bun), Cursor with agent mode.
 
-> **🚧 Work in progress** — the Marketplace plugin is **awaiting Cursor team review**. Until it's listed, install via the local-folder path described in Option A. Tracking in [#485](https://github.com/mksglu/context-mode/issues/485) / [#489](https://github.com/mksglu/context-mode/pull/489).
+> **🚧 Work in progress** — the Marketplace plugin is **awaiting Cursor team review**. Until it's listed, install via the local-folder path described in Option A. Tracking in [#485](https://github.com/mxalbert1996/context-mode/issues/485) / [#489](https://github.com/mxalbert1996/context-mode/pull/489).
 
 ### Option A — Marketplace plugin (recommended once published)
 
@@ -380,7 +380,7 @@ After Cursor lists context-mode in the [Marketplace](https://cursor.com/marketpl
 **Windows (PowerShell)** — Cursor does not follow Windows symlinks/junctions, so use `robocopy`:
 
 ```powershell
-git clone https://github.com/mksglu/context-mode.git
+git clone https://github.com/mxalbert1996/context-mode.git
 cd context-mode
 robocopy . "$env:USERPROFILE\.cursor\plugins\local\context-mode" /MIR `
   /XD node_modules .git build web tests scripts .vscode `
@@ -390,7 +390,7 @@ robocopy . "$env:USERPROFILE\.cursor\plugins\local\context-mode" /MIR `
 **macOS / Linux:**
 
 ```bash
-git clone https://github.com/mksglu/context-mode.git
+git clone https://github.com/mxalbert1996/context-mode.git
 ln -s "$PWD/context-mode" ~/.cursor/plugins/local/context-mode
 ```
 
@@ -403,7 +403,7 @@ Restart Cursor. The plugin appears in **Settings → Plugins** as "Context Mode 
 1. Install context-mode globally:
 
    ```bash
-   npm install -g context-mode
+   npm install -g @mxalbert/context-mode
    ```
 
 2. Create `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` for global):
@@ -553,7 +553,7 @@ context-mode runs as a native [OpenClaw](https://github.com/openclaw) gateway pl
 1. Clone and install:
 
    ```bash
-   git clone https://github.com/mksglu/context-mode.git
+   git clone https://github.com/mxalbert1996/context-mode.git
    cd context-mode
    npm run install:openclaw
    ```
@@ -590,7 +590,7 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
 1. Add the context-mode marketplace and install the plugin from Codex's plugin UI:
 
    ```bash
-   codex plugin marketplace add mksglu/context-mode
+   codex plugin marketplace add mxalbert1996/context-mode
    ```
 
 2. Enable plugin-provided hooks while the Codex feature is still gated:
@@ -637,7 +637,7 @@ The Codex plugin manifest provides MCP via `.codex-plugin/mcp.json`, skills via
 1. Install context-mode globally:
 
    ```bash
-   npm install -g context-mode
+   npm install -g @mxalbert/context-mode
    ```
 
 2. Add to `~/.codex/config.toml`:
@@ -699,7 +699,7 @@ The Codex plugin manifest provides MCP via `.codex-plugin/mcp.json`, skills via
 1. Install context-mode:
 
    ```bash
-   npm install -g context-mode
+   npm install -g @mxalbert/context-mode
    ```
 
 2. Add context-mode as an MCP server. Add to `~/.kimi-code/mcp.json`:
@@ -778,7 +778,7 @@ Full documentation: [`docs/adapters/kimi-code.md`](docs/adapters/kimi-code.md)
 1. Install context-mode:
 
    ```bash
-   npm install -g context-mode
+   npm install -g @mxalbert/context-mode
    ```
 
 2. Add context-mode as an MCP server. Add to `~/.qwen/settings.json`:
@@ -836,7 +836,7 @@ Full documentation: [`docs/adapters/kimi-code.md`](docs/adapters/kimi-code.md)
 1. Install context-mode globally:
 
    ```bash
-   npm install -g context-mode
+   npm install -g @mxalbert/context-mode
    ```
 
 2. Add to `~/.gemini/antigravity/mcp_config.json`:
@@ -877,8 +877,8 @@ Full configs: [`configs/antigravity/mcp_config.json`](configs/antigravity/mcp_co
 **Install:**
 
 ```bash
-npm install -g context-mode                                                                  # the plugin's MCP server + hooks run the global binary
-agy plugin install https://github.com/mksglu/context-mode/tree/main/configs/antigravity-cli  # registers MCP + rule + skill + hooks
+npm install -g @mxalbert/context-mode                                                                  # the plugin's MCP server + hooks run the global binary
+agy plugin install https://github.com/mxalbert1996/context-mode/tree/main/configs/antigravity-cli  # registers MCP + rule + skill + hooks
 ```
 
 Restart `agy`.
@@ -891,7 +891,7 @@ Restart `agy`.
 
 **Verify:** type `ctx stats` in an agy session, or run any prompt from [Try It](#try-it) and check the savings. `context-mode doctor` confirms MCP + hook registration. Remove with `agy plugin uninstall context-mode`.
 
-**Routing:** the routing rule and skill provide the instruction layer; bounded `PreToolUse` blocks high-flood tools and `PostToolUse` captures sessions. The bundle pins `CONTEXT_MODE_PLATFORM=antigravity-cli` so agy is detected even when Claude Code is co-installed ([#774](https://github.com/mksglu/context-mode/issues/774)).
+**Routing:** the routing rule and skill provide the instruction layer; bounded `PreToolUse` blocks high-flood tools and `PostToolUse` captures sessions. The bundle pins `CONTEXT_MODE_PLATFORM=antigravity-cli` so agy is detected even when Claude Code is co-installed ([#774](https://github.com/mxalbert1996/context-mode/issues/774)).
 
 </details>
 
@@ -905,7 +905,7 @@ Restart `agy`.
 1. Install context-mode globally:
 
    ```bash
-   npm install -g context-mode
+   npm install -g @mxalbert/context-mode
    ```
 
 2. Add to `.kiro/settings/mcp.json` in your project (or `~/.kiro/settings/mcp.json` for global):
@@ -963,7 +963,7 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 1. Install context-mode globally:
 
    ```bash
-   npm install -g context-mode
+   npm install -g @mxalbert/context-mode
    ```
 
 2. Add to `~/.config/zed/settings.json` (Windows: `%APPDATA%\Zed\settings.json`):
@@ -1006,7 +1006,7 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 1. Install context-mode globally:
 
    ```bash
-   npm install -g context-mode
+   npm install -g @mxalbert/context-mode
    ```
 
 2. Install the package into Pi:
@@ -1053,7 +1053,7 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 1. Run the OMP plugin install:
 
    ```bash
-   omp plugin install context-mode
+   omp plugin install @mxalbert/context-mode
    ```
 
 2. Restart OMP.
@@ -1067,7 +1067,7 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 
    Both should show `context-mode` as `enabled`.
 
-   > The plugin self-registers its MCP server in `~/.omp/agent/mcp.json` on first load (spawned as `node <plugin>/server.bundle.mjs`, since the plugin-install package directory is not on `PATH`), so the 11 `ctx_*` tools become reachable after the restart in step 2 — no manual `mcp.json` edit needed ([#677](https://github.com/mksglu/context-mode/issues/677)). An existing `context-mode` entry is never overwritten; remove it if you want the plugin to re-register the bundled path.
+   > The plugin self-registers its MCP server in `~/.omp/agent/mcp.json` on first load (spawned as `node <plugin>/server.bundle.mjs`, since the plugin-install package directory is not on `PATH`), so the 11 `ctx_*` tools become reachable after the restart in step 2 — no manual `mcp.json` edit needed ([#677](https://github.com/mxalbert1996/context-mode/issues/677)). An existing `context-mode` entry is never overwritten; remove it if you want the plugin to re-register the bundled path.
 
 **Install — manual plugin path (if `omp plugin install` is unavailable):**
 
@@ -1075,7 +1075,7 @@ OMP loads anything listed under `~/.omp/plugins/package.json` `dependencies` who
 
 ```bash
 cd ~/.omp/plugins
-bun add context-mode    # or: npm install context-mode
+bun add @mxalbert/context-mode    # or: npm install @mxalbert/context-mode
 ```
 
 Then restart OMP. No lock file edit, no version pin — version is read from the freshly-installed package each time the loader runs (see [`loader.ts:87`](https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/src/extensibility/plugins/loader.ts) `manifest.version = pluginPkg.version`).
@@ -1085,7 +1085,7 @@ Then restart OMP. No lock file edit, no version pin — version is read from the
 1. Install context-mode globally:
 
    ```bash
-   npm install -g context-mode
+   npm install -g @mxalbert/context-mode
    ```
 
 2. Add to `~/.omp/agent/mcp.json` (user scope) or `<project>/.omp/mcp.json` (project scope):
@@ -1123,7 +1123,7 @@ Full configs: [`configs/omp/mcp.json`](configs/omp/mcp.json) | [`configs/omp/SYS
 
 Context Mode uses [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) on Node.js, which ships prebuilt native binaries for most platforms. On glibc >= 2.31 systems (Ubuntu 20.04+, Debian 11+, Fedora 34+, macOS, Windows), `npm install` works without any build tools.
 
-**Linux + Node.js >= 22.5:** Context Mode automatically uses the built-in `node:sqlite` module instead of `better-sqlite3`. This eliminates the native addon entirely, avoiding [sporadic SIGSEGV crashes](https://github.com/nodejs/node/issues/62515) caused by V8's `madvise(MADV_DONTNEED)` corrupting the addon's `.got.plt` section on Linux. No configuration needed — detection is automatic. **Linux + Node < 22.5 is unsupported** ([#564](https://github.com/mksglu/context-mode/issues/564)) — `npm install` will fail with remediation instructions.
+**Linux + Node.js >= 22.5:** Context Mode automatically uses the built-in `node:sqlite` module instead of `better-sqlite3`. This eliminates the native addon entirely, avoiding [sporadic SIGSEGV crashes](https://github.com/nodejs/node/issues/62515) caused by V8's `madvise(MADV_DONTNEED)` corrupting the addon's `.got.plt` section on Linux. No configuration needed — detection is automatic. **Linux + Node < 22.5 is unsupported** ([#564](https://github.com/mxalbert1996/context-mode/issues/564)) — `npm install` will fail with remediation instructions.
 
 **Bun users:** No native compilation needed. Context Mode automatically detects Bun and uses the built-in `bun:sqlite` module via a compatibility adapter. `better-sqlite3` and all its build dependencies are skipped entirely.
 
@@ -1135,7 +1135,7 @@ On older glibc systems (CentOS 7/8, RHEL 8, Debian 10), prebuilt binaries don't 
 
 ```bash
 dnf install -y gcc-toolset-10-gcc gcc-toolset-10-gcc-c++ make python3 python3-setuptools
-scl enable gcc-toolset-10 'npm install -g context-mode'
+scl enable gcc-toolset-10 'npm install -g @mxalbert/context-mode'
 ```
 
 **CentOS 7 / RHEL 7** (glibc 2.17):
@@ -1144,7 +1144,7 @@ scl enable gcc-toolset-10 'npm install -g context-mode'
 yum install -y centos-release-scl
 yum install -y devtoolset-10-gcc devtoolset-10-gcc-c++ make python3
 pip3 install setuptools
-scl enable devtoolset-10 'npm install -g context-mode'
+scl enable devtoolset-10 'npm install -g @mxalbert/context-mode'
 ```
 
 **Alpine Linux:**
@@ -1153,7 +1153,7 @@ Alpine prebuilt binaries (musl) are available in better-sqlite3 v12.8.0+. With t
 
 ```bash
 apk add build-base python3 py3-setuptools
-npm install -g context-mode
+npm install -g @mxalbert/context-mode
 ```
 
 </details>
@@ -1250,7 +1250,7 @@ Session continuity requires 5 hooks working together:
 | **SessionStart** | Restores state after compaction or resume | Yes | Yes | Yes | Yes | Yes | -- | ✓ (via experimental.chat.system.transform) | ✓ (via experimental.chat.system.transform) | Plugin | Yes | -- | -- | -- | -- | ✓ (via session_start event) | ✓ (via session_start event) |
 | | **Session completeness** | **Full** | **High** | **High** | **High** | **High** | **Partial** | **Full** | **Full** | **High** | **Partial** | **--** | **Partial** | **Partial** | **--** | **High** | **High** |
 
-> **Note:** Full session continuity (capture + snapshot + restore) works on **Claude Code**, **Gemini CLI**, **VS Code Copilot**, **JetBrains Copilot**, **OpenCode**, and **KiloCode**. **GitHub Copilot CLI** uses its own camelCase hook config keys (`preToolUse`, `postToolUse`, `preCompact`, `sessionStart`, `userPromptSubmitted`, `agentStop`) and top-level hook responses; it captures prompt, tool, compaction, session-start, and stop events when the plugin hooks are installed. **OpenCode** and **KiloCode** use `experimental.chat.system.transform` as a SessionStart surrogate to inject the routing block and restore prior sessions, plus `chat.message` for user-prompt capture; full SessionStart hook support is not yet available ([#14808](https://github.com/sst/opencode/issues/14808), [#5409](https://github.com/sst/opencode/issues/5409)), but prior-session continuity and user-decision capture work fully. **Cursor** captures tool events via `preToolUse`/`postToolUse`, but `sessionStart` is currently rejected by Cursor's validator ([forum report](https://forum.cursor.com/t/unknown-hook-type-sessionstart/149566)), so session restore after compaction is not available yet. **OpenClaw** uses native gateway plugin hooks (`api.on()`) for full session continuity. **Pi Coding Agent** provides high session continuity via extension hooks (`tool_call`, `tool_result`, `session_start`, `session_before_compact`). **Codex CLI** provides partial hook-based session tracking through PreToolUse, PostToolUse, PreCompact, SessionStart, UserPromptSubmit, and Stop; MCP tools work. **Antigravity IDE** and **Zed** have no hook support in the current release, so session tracking is not available there. **Antigravity CLI (`agy`)** is separate from the IDE and supports bounded `PreToolUse`, capture-only `PostToolUse`, and best-effort `Stop` through its plugin hooks. **Kiro** captures tool events via native `preToolUse`/`postToolUse` hooks, but its SessionStart equivalent (`agentSpawn`) is not yet wired, so session restore after compaction is unavailable. **OMP** (Oh My Pi) ships full plugin-based hook support — `omp plugin install context-mode` registers `tool_call`, `tool_result`, `session_start`, and `session_before_compact` handlers and storage roots cleanly under `~/.omp/context-mode/` so OMP and Pi installs never share state.
+> **Note:** Full session continuity (capture + snapshot + restore) works on **Claude Code**, **Gemini CLI**, **VS Code Copilot**, **JetBrains Copilot**, **OpenCode**, and **KiloCode**. **GitHub Copilot CLI** uses its own camelCase hook config keys (`preToolUse`, `postToolUse`, `preCompact`, `sessionStart`, `userPromptSubmitted`, `agentStop`) and top-level hook responses; it captures prompt, tool, compaction, session-start, and stop events when the plugin hooks are installed. **OpenCode** and **KiloCode** use `experimental.chat.system.transform` as a SessionStart surrogate to inject the routing block and restore prior sessions, plus `chat.message` for user-prompt capture; full SessionStart hook support is not yet available ([#14808](https://github.com/sst/opencode/issues/14808), [#5409](https://github.com/sst/opencode/issues/5409)), but prior-session continuity and user-decision capture work fully. **Cursor** captures tool events via `preToolUse`/`postToolUse`, but `sessionStart` is currently rejected by Cursor's validator ([forum report](https://forum.cursor.com/t/unknown-hook-type-sessionstart/149566)), so session restore after compaction is not available yet. **OpenClaw** uses native gateway plugin hooks (`api.on()`) for full session continuity. **Pi Coding Agent** provides high session continuity via extension hooks (`tool_call`, `tool_result`, `session_start`, `session_before_compact`). **Codex CLI** provides partial hook-based session tracking through PreToolUse, PostToolUse, PreCompact, SessionStart, UserPromptSubmit, and Stop; MCP tools work. **Antigravity IDE** and **Zed** have no hook support in the current release, so session tracking is not available there. **Antigravity CLI (`agy`)** is separate from the IDE and supports bounded `PreToolUse`, capture-only `PostToolUse`, and best-effort `Stop` through its plugin hooks. **Kiro** captures tool events via native `preToolUse`/`postToolUse` hooks, but its SessionStart equivalent (`agentSpawn`) is not yet wired, so session restore after compaction is unavailable. **OMP** (Oh My Pi) ships full plugin-based hook support — `omp plugin install @mxalbert/context-mode` registers `tool_call`, `tool_result`, `session_start`, and `session_before_compact` handlers and storage roots cleanly under `~/.omp/context-mode/` so OMP and Pi installs never share state.
 
 <details>
 <summary><strong>What gets captured</strong></summary>
@@ -1364,7 +1364,7 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `ctx_s
 **Pi Coding Agent** — High coverage. The extension registers all key lifecycle events: `tool_call` (PreToolUse), `tool_result` (PostToolUse), `session_start` (SessionStart), and `session_before_compact` (PreCompact). File edits, git ops, errors, and tasks are fully tracked. Session restore after compaction works via the extension's event hooks.
 Tool call output can be collapsed/expanded with the default Pi's default keybinding (Ctrl+O)
 
-**OMP (Oh My Pi)** — High coverage. The plugin (installed via `omp plugin install context-mode`) registers all key lifecycle events: `tool_call` (PreToolUse), `tool_result` (PostToolUse), `session_start` (SessionStart), and `session_before_compact` (PreCompact). Storage roots cleanly under `~/.omp/context-mode/` so OMP and Pi installs never share state (issue [#473](https://github.com/mksglu/context-mode/issues/473)). Auto-detected via `PI_CODING_AGENT_DIR` env var or presence of `~/.omp/`.
+**OMP (Oh My Pi)** — High coverage. The plugin (installed via `omp plugin install @mxalbert/context-mode`) registers all key lifecycle events: `tool_call` (PreToolUse), `tool_result` (PostToolUse), `session_start` (SessionStart), and `session_before_compact` (PreCompact). Storage roots cleanly under `~/.omp/context-mode/` so OMP and Pi installs never share state (issue [#473](https://github.com/mxalbert1996/context-mode/issues/473)). Auto-detected via `PI_CODING_AGENT_DIR` env var or presence of `~/.omp/`.
 
 </details>
 
@@ -1397,13 +1397,13 @@ Tool call output can be collapsed/expanded with the default Pi's default keybind
 >
 > **Pi Coding Agent** runs context-mode as an extension with full hook support. The extension registers `tool_call`, `tool_result`, `session_start`, and `session_before_compact` events, providing high session continuity coverage. The MCP server provides all 11 MCP tools.
 >
-> **OMP (Oh My Pi)** runs context-mode as a plugin via `omp plugin install context-mode`. The plugin registers `tool_call`, `tool_result`, `session_start`, and `session_before_compact` events for hard-block routing and full session continuity. Storage isolated under `~/.omp/context-mode/` so OMP and Pi never share state. Auto-detected via `PI_CODING_AGENT_DIR` (default agent dir `~/.omp/agent`) or `~/.omp/` directory. See [issue #473](https://github.com/mksglu/context-mode/issues/473) for the storage-isolation history.
+> **OMP (Oh My Pi)** runs context-mode as a plugin via `omp plugin install @mxalbert/context-mode`. The plugin registers `tool_call`, `tool_result`, `session_start`, and `session_before_compact` events for hard-block routing and full session continuity. Storage isolated under `~/.omp/context-mode/` so OMP and Pi never share state. Auto-detected via `PI_CODING_AGENT_DIR` (default agent dir `~/.omp/agent`) or `~/.omp/` directory. See [issue #473](https://github.com/mxalbert1996/context-mode/issues/473) for the storage-isolation history.
 
 ### Routing Enforcement
 
 Hooks intercept tool calls programmatically — they can block dangerous commands and redirect them to the sandbox before execution. Instruction files guide the model via prompt instructions but cannot block anything. **Always enable hooks where supported.**
 
-> **Note:** Routing instruction files were previously auto-written to project directories on first session start. This was disabled to prevent git tree pollution ([#158](https://github.com/mksglu/context-mode/issues/158), [#164](https://github.com/mksglu/context-mode/issues/164)). Hook-capable platforms (Claude Code, Gemini CLI, VS Code Copilot, JetBrains Copilot, GitHub Copilot CLI, Cursor, OpenCode, OpenClaw, Codex CLI, Antigravity CLI for bounded tool hooks, Kiro for tool hooks, OMP via plugin) inject or enforce routing without writing files. Platforms without hook support — Zed and Antigravity IDE — require a one-time manual copy of the routing file; see each platform's install section.
+> **Note:** Routing instruction files were previously auto-written to project directories on first session start. This was disabled to prevent git tree pollution ([#158](https://github.com/mxalbert1996/context-mode/issues/158), [#164](https://github.com/mxalbert1996/context-mode/issues/164)). Hook-capable platforms (Claude Code, Gemini CLI, VS Code Copilot, JetBrains Copilot, GitHub Copilot CLI, Cursor, OpenCode, OpenClaw, Codex CLI, Antigravity CLI for bounded tool hooks, Kiro for tool hooks, OMP via plugin) inject or enforce routing without writing files. Platforms without hook support — Zed and Antigravity IDE — require a one-time manual copy of the routing file; see each platform's install section.
 
 | Platform | Hooks | Instruction File | With Hooks | Without Hooks |
 |---|:---:|---|:---:|:---:|
@@ -1558,7 +1558,7 @@ Commands chained with `&&`, `;`, or `|` are split — each part is checked separ
 
 ### Project-boundary containment
 
-`ctx_execute_file` is confined to the project root. A `path` that resolves **outside** the workspace — an absolute path like `/home/user/secrets`, a `../../` traversal, or a project-local symlink whose target escapes the project — is refused with a `File access blocked` error. This closes the [#852](https://github.com/mksglu/context-mode/issues/852) escape vector where an agent, denied an out-of-project read by the host sandbox, retried through the MCP sandbox (the host's MCP approval prompt cannot inspect the tool's input params, so the escape was invisible to the approver).
+`ctx_execute_file` is confined to the project root. A `path` that resolves **outside** the workspace — an absolute path like `/home/user/secrets`, a `../../` traversal, or a project-local symlink whose target escapes the project — is refused with a `File access blocked` error. This closes the [#852](https://github.com/mxalbert1996/context-mode/issues/852) escape vector where an agent, denied an out-of-project read by the host sandbox, retried through the MCP sandbox (the host's MCP approval prompt cannot inspect the tool's input params, so the escape was invisible to the approver).
 
 The guard is **on by default** and requires no configuration. To intentionally process a file outside the project (e.g. a shared log under `/var/log`), opt that path back in with the **same `permissions.allow` rule you already use for the host `Read` tool** — there is no context-mode-specific env flag:
 
@@ -1603,14 +1603,14 @@ That blocks loopback + RFC1918 + ULA in addition to the always-blocked ranges. U
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY` | `10` | Cadence (in tool calls) at which the PreToolUse hook re-injects the "wrap large external-MCP payloads in `ctx_execute`" guidance. The original implementation ([#529](https://github.com/mksglu/context-mode/pull/529)) fired only once per session, which got lost after context compaction in MCP-heavy sessions (e.g. 50+ Jira/Slack/Notion calls — see [#567](https://github.com/mksglu/context-mode/issues/567) follow-up). The default re-fires every 10th matching call, keeping the guidance in the model's recent window. Range `[1, 100]`; invalid values fall back to `10`. Set to `1` for "every call" (most aggressive — adds ~250 tokens/call) or to a larger value for less frequent reminders. |
+| `CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY` | `10` | Cadence (in tool calls) at which the PreToolUse hook re-injects the "wrap large external-MCP payloads in `ctx_execute`" guidance. The original implementation ([#529](https://github.com/mxalbert1996/context-mode/pull/529)) fired only once per session, which got lost after context compaction in MCP-heavy sessions (e.g. 50+ Jira/Slack/Notion calls — see [#567](https://github.com/mxalbert1996/context-mode/issues/567) follow-up). The default re-fires every 10th matching call, keeping the guidance in the model's recent window. Range `[1, 100]`; invalid values fall back to `10`. Set to `1` for "every call" (most aggressive — adds ~250 tokens/call) or to a larger value for less frequent reminders. |
 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and TDD guidelines.
 
 ```bash
-git clone https://github.com/mksglu/context-mode.git
+git clone https://github.com/mxalbert1996/context-mode.git
 cd context-mode && npm install && npm test
 ```
 

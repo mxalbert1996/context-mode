@@ -47,6 +47,8 @@ describe(".codex-plugin/mcp.json", () => {
   it("declares the context-mode server entry", () => {
     const servers = mcp.mcpServers as Record<string, unknown>;
     expect(servers).toBeTypeOf("object");
+    // Server entry key is the plugin/display name "context-mode" (unchanged by
+    // the v2.0.0 npm package rename — only the package name is scoped).
     expect(servers).toHaveProperty("context-mode");
   });
 

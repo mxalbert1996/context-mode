@@ -19,11 +19,11 @@ The MCP server layer is 100% portable and needs no adapter. Only the hook layer 
 All platforms (except Claude Code plugin install) require a global install:
 
 ```bash
-npm install -g context-mode
+npm install -g @mxalbert/context-mode
 ```
 
 This puts the `context-mode` binary in PATH, which is required for:
-- **MCP server:** `"command": "context-mode"` (replaces ephemeral `npx -y context-mode`)
+- **MCP server:** `"command": "context-mode"` (replaces ephemeral `npx -y @mxalbert/context-mode`)
 - **Hook dispatcher:** `context-mode hook <platform> <event>` (replaces `node ./node_modules/...` paths)
 - **Utility commands:** `context-mode doctor`, `context-mode upgrade`
 - **Persistent upgrades:** `ctx-upgrade` updates the global binary in-place
@@ -236,7 +236,7 @@ context-mode hook codex stop
 - Older context-mode releases used a `plugins/context-mode -> ..` symlink shim
   because Codex rejects the repository root (`"./"`) as an empty local plugin
   source path. On native Windows, Git can check that symlink out as a regular
-  file containing only `..`, which makes `codex plugin add context-mode@context-mode`
+  file containing only `..`, which makes `codex plugin add context-mode@@mxalbert/context-mode`
   fail with `missing plugin.json`. Current releases avoid this by declaring the
   Codex marketplace plugin as a relative Git source (`url: "./"`), so Codex
   materializes the installed marketplace root and finds `.codex-plugin/plugin.json`
@@ -386,13 +386,13 @@ The standalone Antigravity CLI (`agy`) is the command-line companion to Google A
 **Verified:** agy 1.0.10 (Linux). The GitHub-subpath install requires **agy ≥ 1.0.7** (subpath + branch resolution landed in 1.0.7 — run `agy update` to upgrade). No agy hook event was added, removed, or renamed through 1.0.10, and the shared `~/.gemini/config/hooks.json` location has been canonical since agy 1.0.8, so the bundle's `PreToolUse`/`PostToolUse`/`Stop` wiring is current.
 
 **Install:**
-- `npm install -g context-mode` (the plugin's MCP server + hooks run the `context-mode` binary), then `agy plugin install https://github.com/mksglu/context-mode/tree/main/configs/antigravity-cli`. agy clones the repo, resolves the `configs/antigravity-cli` subpath (with branch resolution), and registers the bundle's native `plugin.json` + `mcp_config.json`, routing rule, routing skill, and hooks into its plugin profile under `~/.gemini/config/plugins/context-mode/`. If `ctx_*` tools don't appear after an upgrade, clear agy's stale tool-schema cache (`~/.gemini/antigravity-cli/mcp/context-mode/`) and restart agy (agy caches MCP schemas and doesn't refresh them).
+- `npm install -g @mxalbert/context-mode` (the plugin's MCP server + hooks run the `context-mode` binary), then `agy plugin install https://github.com/mxalbert1996/context-mode/tree/main/configs/antigravity-cli`. agy clones the repo, resolves the `configs/antigravity-cli` subpath (with branch resolution), and registers the bundle's native `plugin.json` + `mcp_config.json`, routing rule, routing skill, and hooks into its plugin profile under `~/.gemini/config/plugins/context-mode/`. If `ctx_*` tools don't appear after an upgrade, clear agy's stale tool-schema cache (`~/.gemini/antigravity-cli/mcp/context-mode/`) and restart agy (agy caches MCP schemas and doesn't refresh them).
 - Already on Claude Code: `agy plugin import claude` can import that existing Claude setup, but the native context-mode agy bundle above is the supported path for agy hooks.
 - MCP only: add context-mode to `~/.gemini/config/mcp_config.json` under `mcpServers` (`{"command":"context-mode"}`).
 
 **Detection:**
 - MCP protocol handshake (`clientInfo.name: "agy"` / `"antigravity-cli"`)
-- Config-dir markers for a bare shell: `~/.local/bin/agy`, `~/.gemini/antigravity-cli/`, or `~/.gemini/config/mcp_config.json` — probed **before** the generic `~/.claude` / `~/.gemini` fallbacks so a gemini-cli→agy migrant is not mis-detected as Claude Code ([#774](https://github.com/mksglu/context-mode/issues/774))
+- Config-dir markers for a bare shell: `~/.local/bin/agy`, `~/.gemini/antigravity-cli/`, or `~/.gemini/config/mcp_config.json` — probed **before** the generic `~/.claude` / `~/.gemini` fallbacks so a gemini-cli→agy migrant is not mis-detected as Claude Code ([#774](https://github.com/mxalbert1996/context-mode/issues/774))
 - Fallback: `CONTEXT_MODE_PLATFORM=antigravity-cli` override
 
 **Hook payload:** the only refs-backed field is the working directory, read from `workspace.current_dir` — an object field, per the upstream hook example (refs/platforms/antigravity-cli/examples/title/title.sh:10, examples/title/README.md:11). context-mode reads `workspace.current_dir` FIRST for the project dir, falling back to `workspacePaths[0]`. The remaining payload shape — `{ conversationId, stepIdx, toolCall: { name, args }, error, workspacePaths: [..], transcriptPath }` — is empirically-derived/**unverified** (no upstream agy doc confirms it) and is treated as best-effort. The event name arrives via argv (set in `hooks.json`), and the hook CWD is `~/.gemini/config`. context-mode maps these onto its routing/capture pipeline (`workspace.current_dir`/`workspacePaths[0]`→project dir, `conversationId`→session id [unverified], `run_command`→`Bash`, `view_file`→`Read`, `grep_search`→`Grep`, `list_dir`→`LS`, `read_url_content`→`WebFetch`, `search_web`→`WebSearch`).
@@ -608,7 +608,7 @@ The standalone GitHub Copilot CLI (`copilot`) is user-home rooted under `~/.copi
 **Context Injection:** top-level `additionalContext` — **SessionStart** is the confirmed channel (verified reaching the model). PreToolUse/PostToolUse `additionalContext` is best-effort/unverified; context-mode's `posttooluse` hook is capture-only and emits no context.
 
 **Configuration:**
-- **Plugin (recommended):** context-mode ships a Copilot CLI plugin bundle at `configs/copilot-cli/` — a root `.mcp.json` (MCP), `hooks.json` (the six capture hooks), a routing skill (`skills/context-mode/`), and a `.github/plugin/plugin.json` manifest. `copilot plugin install mksglu/context-mode:configs/copilot-cli` registers all of it in one command (no clone, no `context-mode upgrade`/agent call). The bundle's `.mcp.json` pins `CONTEXT_MODE_PLATFORM=copilot-cli`, so the server self-identifies as Copilot and `ctx_upgrade`/detection resolve `copilot-cli` even when Claude Code is co-installed (whose `~/.claude/` would otherwise win). Verified on Windows via `copilot --plugin-dir <bundle>`: `ctx_execute` resolves and the `PostToolUse` hook captures non-MCP tool I/O into the session DB. (This `.mcp.json` is the one committed instance in the repo — `.gitignore` un-ignores exactly this path, since a Copilot plugin has no other way to declare MCP.)
+- **Plugin (recommended):** context-mode ships a Copilot CLI plugin bundle at `configs/copilot-cli/` — a root `.mcp.json` (MCP), `hooks.json` (the six capture hooks), a routing skill (`skills/context-mode/`), and a `.github/plugin/plugin.json` manifest. `copilot plugin install mxalbert1996/context-mode:configs/copilot-cli` registers all of it in one command (no clone, no `context-mode upgrade`/agent call). The bundle's `.mcp.json` pins `CONTEXT_MODE_PLATFORM=copilot-cli`, so the server self-identifies as Copilot and `ctx_upgrade`/detection resolve `copilot-cli` even when Claude Code is co-installed (whose `~/.claude/` would otherwise win). Verified on Windows via `copilot --plugin-dir <bundle>`: `ctx_execute` resolves and the `PostToolUse` hook captures non-MCP tool I/O into the session DB. (This `.mcp.json` is the one committed instance in the repo — `.gitignore` un-ignores exactly this path, since a Copilot plugin has no other way to declare MCP.)
 - MCP (manual, no plugin): register with Copilot CLI's own command — `copilot mcp add context-mode -- context-mode` — which writes `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`). (Also `copilot mcp list` / `copilot mcp remove`.)
 - Hook config (manual, no plugin): `$COPILOT_HOME/hooks/context-mode.json` or `~/.copilot/hooks/context-mode.json` (written by `context-mode upgrade`; standalone hooks fire — verified — independent of any plugin)
 - Instruction files: `.github/copilot-instructions.md`, `AGENTS.md`
@@ -635,7 +635,7 @@ context-mode hook copilot-cli stop
 
 **Sources:**
 - Hooks schema: [GitHub Copilot CLI hooks configuration](https://docs.github.com/en/copilot/reference/hooks-configuration)
-- Feature request: [#775](https://github.com/mksglu/context-mode/issues/775)
+- Feature request: [#775](https://github.com/mxalbert1996/context-mode/issues/775)
 
 ---
 
@@ -676,7 +676,7 @@ Cursor uses native lower-camel hook names and flat hook entries in `.cursor/hook
 - Project: `.cursor/hooks.json`
 - User: `~/.cursor/hooks.json`
 - MCP config: `.cursor/mcp.json` or `~/.cursor/mcp.json`
-- **Marketplace plugin (recommended):** `.cursor-plugin/plugin.json` at the repo root auto-registers MCP, hooks, rules, and skills. Manifest explicitly points `hooks` at `./hooks/cursor/hooks.json` to avoid colliding with the Claude-format `./hooks/hooks.json`. Local install: `ln -s <repo> ~/.cursor/plugins/local/context-mode`. Plugin hook commands use `npx -y context-mode hook cursor <event>` so no global install is required.
+- **Marketplace plugin (recommended):** `.cursor-plugin/plugin.json` at the repo root auto-registers MCP, hooks, rules, and skills. Manifest explicitly points `hooks` at `./hooks/cursor/hooks.json` to avoid colliding with the Claude-format `./hooks/hooks.json`. Local install: `ln -s <repo> ~/.cursor/plugins/local/context-mode`. Plugin hook commands use `npx -y @mxalbert/context-mode hook cursor <event>` so no global install is required.
 
 **Plugin/native duplication:** `context-mode doctor` warns when both the plugin and `.cursor/hooks.json` register context-mode hooks (each event would otherwise fire twice). Remove one configuration to keep events single-fire.
 
@@ -788,7 +788,7 @@ The hook adapter exists only to satisfy the interface contract — every parser 
 
 **Hook Paradigm:** MCP-only
 
-[Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi) is a Pi-compatible harness that stores its agent state under `~/.omp/agent/` (overridable via `OMP_PROCESSING_AGENT_DIR`). Before the dedicated adapter, OMP detection fell through to `pi` and storage rooted under another harness's directory (typically `~/.claude/`), per [issue #473](https://github.com/mksglu/context-mode/issues/473). The OMP adapter exists primarily to keep `~/.omp/context-mode/` isolated, not to provide hook integration — OMP, like Antigravity/Kiro/Zed, runs context-mode purely as an MCP server.
+[Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi) is a Pi-compatible harness that stores its agent state under `~/.omp/agent/` (overridable via `OMP_PROCESSING_AGENT_DIR`). Before the dedicated adapter, OMP detection fell through to `pi` and storage rooted under another harness's directory (typically `~/.claude/`), per [issue #473](https://github.com/mxalbert1996/context-mode/issues/473). The OMP adapter exists primarily to keep `~/.omp/context-mode/` isolated, not to provide hook integration — OMP, like Antigravity/Kiro/Zed, runs context-mode purely as an MCP server.
 
 **Hook Support:**
 - PreToolUse: --

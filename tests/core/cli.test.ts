@@ -3292,7 +3292,9 @@ describe("Upgrade syncs skills to active install path (#228)", () => {
 
   test("upgrade reads installed_plugins.json to find active install path", () => {
     expect(upgradeBody).toContain("installed_plugins.json");
-    expect(upgradeBody).toContain("context-mode@context-mode");
+    // Registry lookup keys on PLUGIN_KEY ("context-mode@@mxalbert/context-mode")
+    // from src/package-identity.ts — the "<pluginId>@<npmPackage>" composite.
+    expect(upgradeBody).toContain("PLUGIN_KEY");
     expect(upgradeBody).toContain("installPath");
   });
 

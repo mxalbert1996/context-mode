@@ -50,6 +50,7 @@ import {
   StorageDirectoryError,
 } from "./session/db.js";
 import { purgeSession } from "./session/purge.js";
+import { NPM_LATEST_URL, PACKAGE_NAME, PLUGIN_KEY } from "./package-identity.js";
 import {
   emitCacheHitEvent,
   emitIndexWriteEvent,
@@ -225,7 +226,7 @@ export function emitSuppressionDiagnostic(
   const platform = opts.platform ?? "opencode/kilo";
   write(
     `[context-mode] ctx_* tools/list intentionally empty on this MCP child: ` +
-    `legacy mcp.context-mode block coexists with plugin: ["context-mode"] in ` +
+    `legacy mcp.context-mode block coexists with plugin: ["${PACKAGE_NAME}"] in ` +
     `${platform}.json — plugin-native tools are the supported path (#623). ` +
     `Run \`context-mode upgrade\` to remove the legacy block (preserves other ` +
     `MCP servers).\n`
@@ -781,7 +782,7 @@ const VERSION_SILENT_MS = 60 * 60 * 1000; // 1 hour
 async function fetchLatestVersion(): Promise<string> {
   return new Promise((res) => {
     const req = httpsRequest(
-      "https://registry.npmjs.org/context-mode/latest",
+      NPM_LATEST_URL,
       { headers: { Connection: "close" } },
       (resp) => {
         let raw = "";
@@ -805,7 +806,7 @@ function getUpgradeHint(): string {
   if (name === "Claude Code") return "/ctx-upgrade";
   if (name === "OpenClaw") return "npm run install:openclaw";
   if (name === "Pi") return "npm run build";
-  return "npm update -g context-mode";
+  return "npm update -g @mxalbert/context-mode";
 }
 
 function semverNewer(a: string, b: string): boolean {
@@ -865,7 +866,7 @@ function healCacheMidSession(): void {
     // Plugin root: build/ for tsc, plugin root for bundle
     const pluginRoot = getPackageRoot();
     for (const [key, entries] of Object.entries((ip.plugins ?? {}) as Record<string, Array<{ installPath?: string }>>)) {
-      if (key !== "context-mode@context-mode") continue;
+      if (key !== PLUGIN_KEY) continue;
       for (const entry of entries) {
         const rp = entry.installPath;
         if (!rp || existsSync(rp)) continue;
@@ -4805,7 +4806,7 @@ server.registerTool(
     } else {
       // Inline fallback: neither CLI file exists (e.g. marketplace installs).
       // Generate a self-contained node -e script that performs the upgrade.
-      const repoUrl = "https://github.com/mksglu/context-mode.git";
+      const repoUrl = "https://github.com/mxalbert1996/context-mode.git";
       // Write inline script to a temp .mjs file — avoids quote-escaping issues
       // across cmd.exe, PowerShell, and bash (node -e '...' breaks on Windows).
       const scriptLines = [

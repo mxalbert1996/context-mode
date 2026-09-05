@@ -106,7 +106,7 @@ with hard evidence. We shipped inheritEnvKeys because an LLM said Claude Code st
 2. If `VERDICT: UNCONFIRMED` — do NOT implement. Instead, comment on the issue:
    ```
    We couldn't reproduce/verify this claim. Could you provide:
-   - Debug output from: npx context-mode doctor (or ctx-debug.sh)
+   - Debug output from: npx @mxalbert/context-mode doctor (or ctx-debug.sh)
    - Exact steps to reproduce
    - Platform version and OS
 

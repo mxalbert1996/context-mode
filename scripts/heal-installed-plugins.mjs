@@ -9,7 +9,7 @@
  *
  * Single source of truth shared by:
  *   - `start.mjs` HEAL 3+4 (every MCP boot)
- *   - `scripts/postinstall.mjs` (every `npm install -g context-mode`)
+ *   - `scripts/postinstall.mjs` (every `npm install -g @mxalbert/context-mode`)
  *
  * Pure Node.js (built-ins only). Best-effort: never throws, always
  * returns a plain result object so callers can log a one-liner.
@@ -19,6 +19,33 @@
 
 import { existsSync, readFileSync, writeFileSync, readdirSync, unlinkSync, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
+
+// npm package identity (v2.0.0 fork rename). The plugin/display id stays
+// "context-mode"; only the npm package name is scoped.
+export const PACKAGE_NAME = "@mxalbert/context-mode";
+export const PLUGIN_ID = "context-mode";
+// Claude Code registry key: "<pluginId>@<npmPackage>". A scoped package
+// yields a double-@ key ("context-mode@@mxalbert/context-mode").
+export const PLUGIN_KEY = `${PLUGIN_ID}@${PACKAGE_NAME}`;
+
+/**
+ * Parse a plugin registry key of the shape "<pluginId>@<npmPackage>" where
+ * <npmPackage> may be scoped ("@scope/name"). Returns the pluginId (segment
+ * before the FIRST "@") and the package segment (everything after it,
+ * verbatim — including a leading "@" for scoped packages). Splitting at the
+ * first "@" keeps legacy keys ("context-mode@context-mode") and scoped keys
+ * ("context-mode@@mxalbert/context-mode") both well-formed; a plain
+ * `split("@")` would mangle scoped keys into an empty middle segment.
+ *
+ * @param {string} pluginKey
+ * @returns {{ id: string, pkg: string } | null} null when the key has no
+ *   separator (bad shape).
+ */
+function parsePluginKey(pluginKey) {
+  const sepIdx = pluginKey.indexOf("@");
+  if (sepIdx <= 0) return null;
+  return { id: pluginKey.slice(0, sepIdx), pkg: pluginKey.slice(sepIdx + 1) };
+}
 
 /**
  * @typedef {Object} HealResult
@@ -201,7 +228,7 @@ export function healSettingsEnabledPlugins({ settingsPath, pluginKey }) {
 //
 // Single source of truth shared by:
 //   - `start.mjs` HEAL 5b (every MCP boot)
-//   - `scripts/postinstall.mjs` (every `npm install -g context-mode`)
+//   - `scripts/postinstall.mjs` (every `npm install -g @mxalbert/context-mode`)
 //   - `src/cli.ts` upgrade() (post-bump)
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -248,8 +275,8 @@ export function healPluginJsonMcpServers({ pluginRoot, pluginCacheRoot, pluginKe
     return { healed: [], skipped: "no-mcp-servers" };
   }
 
-  // Derive our server name from pluginKey ("context-mode@context-mode" → "context-mode").
-  const ourServerName = pluginKey.split("@")[0];
+  // Derive our server name from pluginKey ("context-mode@@mxalbert/context-mode" → "context-mode").
+  const ourServerName = parsePluginKey(pluginKey)?.id ?? pluginKey.split("@")[0];
   const ours = servers[ourServerName];
   if (!ours || typeof ours !== "object" || !Array.isArray(ours.args)) {
     return { healed: [], skipped: "no-our-server" };
@@ -305,7 +332,7 @@ export function healPluginJsonMcpServers({ pluginRoot, pluginCacheRoot, pluginKe
 //
 // Single source of truth shared by:
 //   - `start.mjs` HEAL 5b (every MCP boot)
-//   - `scripts/postinstall.mjs` (every `npm install -g context-mode`)
+//   - `scripts/postinstall.mjs` (every `npm install -g @mxalbert/context-mode`)
 //   - `src/cli.ts` upgrade() (post-bump)
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -358,8 +385,8 @@ export function healMcpJsonArgs({ pluginRoot, pluginCacheRoot, pluginKey }) {
     return { healed: [], skipped: "no-mcp-servers" };
   }
 
-  // Derive our server name from pluginKey ("context-mode@context-mode" → "context-mode").
-  const ourServerName = pluginKey.split("@")[0];
+  // Derive our server name from pluginKey ("context-mode@@mxalbert/context-mode" → "context-mode").
+  const ourServerName = parsePluginKey(pluginKey)?.id ?? pluginKey.split("@")[0];
   const ours = servers[ourServerName];
   if (!ours || typeof ours !== "object" || !Array.isArray(ours.args)) {
     return { healed: [], skipped: "no-our-server" };
@@ -506,7 +533,7 @@ export function healClaudeJsonMcpArgs({ dotClaudeJsonPath, pluginCacheParent, ne
 //
 // Single source of truth shared by:
 //   - `start.mjs` HEAL 5c (every MCP boot)
-//   - `scripts/postinstall.mjs` (every `npm install -g context-mode`)
+//   - `scripts/postinstall.mjs` (every `npm install -g @mxalbert/context-mode`)
 //   - `src/cli.ts` upgrade() (post-bump)
 //
 // Safety contracts:
@@ -525,10 +552,12 @@ export function healClaudeJsonMcpArgs({ dotClaudeJsonPath, pluginCacheParent, ne
 
 /**
  * Remove every `.mcp.json` from per-version directories under
- * `<pluginCacheRoot>/<owner>/<plugin>/<X.Y.Z>/`.
+ * `<pluginCacheRoot>/<seg1>/<seg2>/`.
  *
  * @param {{ pluginCacheRoot: string, pluginKey: string }} opts
- *   pluginKey is the "<owner>@<plugin>" form (e.g. "context-mode@context-mode").
+ *   pluginKey is the "<pluginId>@<npmPackage>" form (e.g. the legacy
+ *   "context-mode@context-mode" or the scoped
+ *   "context-mode@@mxalbert/context-mode").
  * @returns {SweepResult}
  */
 export function sweepStaleMcpJson({ pluginCacheRoot, pluginKey }) {
@@ -544,8 +573,16 @@ export function sweepStaleMcpJson({ pluginCacheRoot, pluginKey }) {
     return { removed, skipped: "no-cache-root" };
   }
 
-  // pluginKey shape: "<owner>@<plugin>"
-  const [ownerSegment, pluginSegment] = pluginKey.split("@");
+  // pluginKey shape: "<pluginId>@<npmPackage>" where the package may be
+  // scoped ("@scope/name"), so the key may contain two '@' characters.
+  // Split at the FIRST '@' only — a plain split("@") would turn the scoped
+  // key into an empty middle segment and abort the sweep.
+  const keyParts = parsePluginKey(pluginKey);
+  if (!keyParts) {
+    return { removed, skipped: "bad-plugin-key" };
+  }
+  const ownerSegment = keyParts.id;
+  const pluginSegment = keyParts.pkg;
   if (!ownerSegment || !pluginSegment) {
     return { removed, skipped: "bad-plugin-key" };
   }

@@ -302,12 +302,12 @@ footer{padding:64px 0 40px;text-align:center;background:var(--bg-2);border-top:1
           </a>
         </div>
       </div>
-      <a href="https://github.com/mksglu/context-mode" class="topnav-item">GitHub</a>
+      <a href="https://github.com/mxalbert1996/context-mode" class="topnav-item">GitHub</a>
       <a href="https://discord.gg/DCN9jUgN5v" class="topnav-item">Discord</a>
     </div>
     <div class="topnav-cta">
       <a href="/insight" class="btn btn-ghost">Insight →</a>
-      <a href="https://github.com/mksglu/context-mode" class="btn btn-primary">Install</a>
+      <a href="https://github.com/mxalbert1996/context-mode" class="btn btn-primary">Install</a>
     </div>
   </div>
 </nav>
@@ -612,11 +612,11 @@ footer{padding:64px 0 40px;text-align:center;background:var(--bg-2);border-top:1
     <div class="install-list rev">
       <div class="install pri">
         <div class="il">Claude Code <span class="pill">recommended</span></div>
-        <code>/plugin marketplace add mksglu/context-mode</code>
+        <code>/plugin marketplace add mxalbert1996/context-mode</code>
       </div>
       <div class="install">
         <div class="il">All platforms</div>
-        <code>npm install -g context-mode</code>
+        <code>npm install -g @mxalbert/context-mode</code>
       </div>
     </div>
 
@@ -635,7 +635,7 @@ footer{padding:64px 0 40px;text-align:center;background:var(--bg-2);border-top:1
     <span style="color:var(--text-4);margin:0 8px">·</span>
     <a href="/insight" style="color:var(--text-3)">Platform</a>
     <span style="color:var(--text-4);margin:0 8px">·</span>
-    <a href="https://github.com/mksglu/context-mode" style="color:var(--text-3)">GitHub</a>
+    <a href="https://github.com/mxalbert1996/context-mode" style="color:var(--text-3)">GitHub</a>
     <span style="color:var(--text-4);margin:0 8px">·</span>
     <a href="https://discord.gg/DCN9jUgN5v" style="color:var(--text-3)">Discord</a>
   </p>
@@ -647,7 +647,7 @@ footer{padding:64px 0 40px;text-align:center;background:var(--bg-2);border-top:1
 <div class="sticky-cta" id="sticky-cta" aria-hidden="true">
   <div class="sticky-inner">
     <p class="sticky-text"><strong>Free, open-source, runs locally.</strong> Two commands, two minutes.</p>
-    <a class="sticky-button" href="https://github.com/mksglu/context-mode#install">Get Started →</a>
+    <a class="sticky-button" href="https://github.com/mxalbert1996/context-mode#install">Get Started →</a>
   </div>
 </div>
 
@@ -665,7 +665,7 @@ function toLongForm(short){
   else if(m[2] && /m/i.test(m[2])) num *= 1000000;
   return Math.round(num).toLocaleString('en-US') + '+';
 }
-fetch('https://raw.githubusercontent.com/mksglu/context-mode/main/stats.json')
+fetch('https://raw.githubusercontent.com/mxalbert1996/context-mode/main/stats.json')
   .then(r=>r.json())
   .then(d=>{
     if(!d) return;
@@ -676,7 +676,7 @@ fetch('https://raw.githubusercontent.com/mksglu/context-mode/main/stats.json')
   .catch(()=>{});
 
 // GitHub stars
-fetch('https://api.github.com/repos/mksglu/context-mode')
+fetch('https://api.github.com/repos/mxalbert1996/context-mode')
   .then(r=>r.json())
   .then(d=>{
     if(d && d.stargazers_count){

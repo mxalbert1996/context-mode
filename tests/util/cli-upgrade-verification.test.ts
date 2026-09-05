@@ -86,7 +86,8 @@ describe("start.mjs HEAL 3 + HEAL 4 wiring (v1.0.114 hotfix)", () => {
     const block = startSrc.slice(heal34Idx, layer4Idx);
     expect(block).toContain("installed_plugins.json");
     expect(block).toContain('"cache"');
-    expect(block).toContain('"context-mode@context-mode"');
+    // Scoped npm package → double-@ registry key ("context-mode@@mxalbert/context-mode").
+    expect(block).toContain('"context-mode@@mxalbert/context-mode"');
   });
 });
 

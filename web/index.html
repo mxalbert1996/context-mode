@@ -458,7 +458,7 @@ footer{padding:64px 0 40px;text-align:center;background:var(--bg-alt);border-top
         </div>
       </div>
       <a href="/context-saving" class="topnav-item">Context Saving</a>
-      <a href="https://github.com/mksglu/context-mode" class="topnav-item">GitHub</a>
+      <a href="https://github.com/mxalbert1996/context-mode" class="topnav-item">GitHub</a>
       <a href="https://discord.gg/DCN9jUgN5v" class="topnav-item">Discord</a>
     </div>
     <div class="topnav-cta">
@@ -499,7 +499,7 @@ footer{padding:64px 0 40px;text-align:center;background:var(--bg-alt);border-top
         </div>
         <div class="card-content">
           <div class="specs">
-            <div><span class="k">install</span><span class="v">npm i -g context-mode</span></div>
+            <div><span class="k">install</span><span class="v">npm i -g @mxalbert/context-mode</span></div>
             <div><span class="k">license</span><span class="v">Elastic License 2.0</span></div>
             <div><span class="k">runs</span><span class="v">entirely on your machine</span></div>
           </div>
@@ -575,7 +575,7 @@ footer{padding:64px 0 40px;text-align:center;background:var(--bg-alt);border-top
         </p>
         <div style="display:flex;gap:.625rem;margin-top:1.5rem;flex-wrap:wrap">
           <a href="/context-saving" class="btn btn-primary" style="background:var(--accent-dev);color:#fff">Full story · Context Saving →</a>
-          <a href="https://github.com/mksglu/context-mode" class="btn btn-ghost">View on GitHub</a>
+          <a href="https://github.com/mxalbert1996/context-mode" class="btn btn-ghost">View on GitHub</a>
         </div>
       </div>
     </div>
@@ -805,7 +805,7 @@ footer{padding:64px 0 40px;text-align:center;background:var(--bg-alt);border-top
     <span style="color:var(--text-4);margin:0 8px">·</span>
     <a href="/insight">Platform</a>
     <span style="color:var(--text-4);margin:0 8px">·</span>
-    <a href="https://github.com/mksglu/context-mode">GitHub</a>
+    <a href="https://github.com/mxalbert1996/context-mode">GitHub</a>
     <span style="color:var(--text-4);margin:0 8px">·</span>
     <a href="https://discord.gg/DCN9jUgN5v">Discord</a>
   </p>
@@ -829,7 +829,7 @@ function toLongForm(short){
   return Math.round(num).toLocaleString('en-US') + '+';
 }
 
-fetch('https://raw.githubusercontent.com/mksglu/context-mode/main/stats.json')
+fetch('https://raw.githubusercontent.com/mxalbert1996/context-mode/main/stats.json')
   .then(r=>r.json())
   .then(d=>{
     if(!d) return;
@@ -847,7 +847,7 @@ fetch('https://raw.githubusercontent.com/mksglu/context-mode/main/stats.json')
   .catch(()=>{});
 
 // GitHub stars
-fetch('https://api.github.com/repos/mksglu/context-mode')
+fetch('https://api.github.com/repos/mxalbert1996/context-mode')
   .then(r=>r.json())
   .then(d=>{
     if(d && d.stargazers_count){

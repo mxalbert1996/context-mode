@@ -1,5 +1,5 @@
 {
-  "name": "context-mode",
+  "name": "@mxalbert/context-mode",
   "interface": {
     "displayName": "context-mode"
   },

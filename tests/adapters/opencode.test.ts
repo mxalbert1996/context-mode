@@ -221,7 +221,8 @@ describe("OpenCodeAdapter", () => {
         changes: ["Added context-mode to plugin array"],
       });
       expect(() => readFileSync(resolve(dir, "opencode.json"), "utf-8")).toThrow();
-      expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({ plugin: ["context-mode"] });
+      // Fresh registrations push the scoped npm package name (PACKAGE_NAME).
+      expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({ plugin: ["@mxalbert/context-mode"] });
 
       rmSync(root, { recursive: true, force: true });
     });
@@ -489,7 +490,7 @@ describe("OpenCodeAdapter", () => {
         expect(JSON.parse(run.stdout)).toEqual(["Added context-mode to plugin array"]);
         // Should write back to .jsonc (same file it read)
         expect(JSON.parse(readFileSync(join(dir, "opencode.jsonc"), "utf-8"))).toEqual({
-          plugin: ["context-mode"],
+          plugin: ["@mxalbert/context-mode"],
         });
         rmSync(root, { recursive: true, force: true });
       });
@@ -529,10 +530,11 @@ describe("OpenCodeAdapter", () => {
         expect(run.status).toBe(0);
 
         // context-mode must be merged INTO the real .jsonc config, preserving it.
+        // (Fresh registrations push the scoped npm package name — PACKAGE_NAME.)
         const jsonc = JSON.parse(readFileSync(join(dir, "opencode.jsonc"), "utf-8"));
         expect(jsonc).toEqual({
           theme: "tokyonight",
-          plugin: ["my-plugin", "context-mode"],
+          plugin: ["my-plugin", "@mxalbert/context-mode"],
         });
 
         // The placeholder .json must stay an untouched empty object — never a
@@ -594,7 +596,7 @@ describe("OpenCodeAdapter", () => {
         expect(run.status).toBe(0);
         expect(JSON.parse(run.stdout)).toEqual(["Added context-mode to plugin array"]);
         expect(() => readFileSync(resolve(dir, "opencode.json"), "utf-8")).toThrow();
-        expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({ plugin: ["context-mode"] });
+        expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({ plugin: ["@mxalbert/context-mode"] });
 
         rmSync(root, { recursive: true, force: true });
       });
@@ -841,8 +843,8 @@ describe("OpenCodeAdapter — v2 config compatibility", () => {
       expect(changes).toContain("Added context-mode to plugin array");
       expect(changes).toContain("Added context-mode to plugins array");
       expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({
-        plugin: ["old-v1", "context-mode"],
-        plugins: ["old-v2", "context-mode"],
+        plugin: ["old-v1", "@mxalbert/context-mode"],
+        plugins: ["old-v2", "@mxalbert/context-mode"],
       });
 
       rmSync(root, { recursive: true, force: true });
@@ -890,7 +892,7 @@ describe("OpenCodeAdapter — v2 config compatibility", () => {
       );
       // MCP fallback preserved — v2 native tool registration is not confirmed
       expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({
-        plugins: ["context-mode"],
+        plugins: ["@mxalbert/context-mode"],
         mcp: {
           "context-mode": { type: "local", command: ["context-mode"] },
           other: { type: "local", command: ["other"] },

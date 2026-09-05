@@ -363,7 +363,7 @@ footer{padding:64px 0 40px;text-align:center;background:var(--bg-alt);border-top
         </div>
       </div>
       <a href="/context-saving" class="topnav-item">Context Saving</a>
-      <a href="https://github.com/mksglu/context-mode" class="topnav-item">GitHub</a>
+      <a href="https://github.com/mxalbert1996/context-mode" class="topnav-item">GitHub</a>
       <a href="https://discord.gg/DCN9jUgN5v" class="topnav-item">Discord</a>
     </div>
     <div class="topnav-cta">
@@ -735,7 +735,7 @@ function toLongForm(short){
   else if(m[2]&&/m/i.test(m[2])) num*=1000000;
   return Math.round(num).toLocaleString('en-US')+'+';
 }
-fetch('https://raw.githubusercontent.com/mksglu/context-mode/main/stats.json')
+fetch('https://raw.githubusercontent.com/mxalbert1996/context-mode/main/stats.json')
   .then(r=>r.json())
   .then(d=>{
     if(!d) return;

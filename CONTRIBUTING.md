@@ -161,7 +161,7 @@ Where you could not exercise the real path, say so and name the link that went u
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/mksglu/context-mode.git
+git clone https://github.com/mxalbert1996/context-mode.git
 cd context-mode
 npm install
 npm run build  # tsc compiles src/ → build/
@@ -334,7 +334,7 @@ We follow test-driven development. Every PR must include tests.
 The skill lives under `.claude/skills/context-mode-ops/` in this repo (moved from the deprecated `skills/` location in #439). Install via the direct path:
 
 ```bash
-npx skills add https://github.com/mksglu/context-mode/tree/main/.claude/skills/context-mode-ops
+npx skills add https://github.com/mxalbert1996/context-mode/tree/main/.claude/skills/context-mode-ops
 ```
 
 ### Red-Green-Refactor
@@ -413,11 +413,11 @@ To test against a running OpenClaw gateway:
 
 See [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md) for hook registration details and known upstream issues.
 
-## Prose-style policy (issue [#482](https://github.com/mksglu/context-mode/issues/482))
+## Prose-style policy (issue [#482](https://github.com/mxalbert1996/context-mode/issues/482))
 
 context-mode does not dictate how the model writes its final answer. The four pillars (sandbox routing, session continuity, think-in-code, no prose-style enforcement) keep raw data out of context but leave editorial style — brevity vs. completeness, formatting, tone — entirely to the model and the user's own `CLAUDE.md` / `AGENTS.md`.
 
-**Why:** aggressive brevity instructions have been shown to degrade coding/reasoning benchmarks. Moonshot AI's report on `kimi-k2.5` (cited in [#482](https://github.com/mksglu/context-mode/issues/482), with the OpenCode fix at [anomalyco/opencode#20259](https://github.com/anomalyco/opencode/pull/20259)) showed that prompts like "minimize output tokens", "MUST answer concisely with fewer than 4 lines", and "one-word answers are best" pushed coding models to drop assumptions, caveats, verification evidence, failure modes, and security warnings the user actually needed.
+**Why:** aggressive brevity instructions have been shown to degrade coding/reasoning benchmarks. Moonshot AI's report on `kimi-k2.5` (cited in [#482](https://github.com/mxalbert1996/context-mode/issues/482), with the OpenCode fix at [anomalyco/opencode#20259](https://github.com/anomalyco/opencode/pull/20259)) showed that prompts like "minimize output tokens", "MUST answer concisely with fewer than 4 lines", and "one-word answers are best" pushed coding models to drop assumptions, caveats, verification evidence, failure modes, and security warnings the user actually needed.
 
 **What this means for contributors:**
 

@@ -33,7 +33,7 @@ const REPO_ROOT = resolve(__dirname, "../..");
 const REPO_POSTINSTALL = resolve(REPO_ROOT, "scripts", "postinstall.mjs");
 const REPO_HEAL_IP = resolve(REPO_ROOT, "scripts", "heal-installed-plugins.mjs");
 const REPO_HEAL_SQLITE3 = resolve(REPO_ROOT, "scripts", "heal-better-sqlite3.mjs");
-const KEY = "context-mode@context-mode";
+const KEY = "context-mode@@mxalbert/context-mode";
 
 /**
  * Simulate an `npm install -g` package layout: copy postinstall + its
@@ -52,7 +52,8 @@ function stagePostinstallPackage(): {
   // Keep the fake package several levels below tmpdir. isGlobalInstall() only
   // scans four ancestors; this prevents ambient markers like /tmp/.git from
   // making the staged global-install fixture look like a contributor checkout.
-  const root = join(base, "npm", "lib", "node_modules", "context-mode");
+  // Scoped npm package: global installs land at node_modules/@mxalbert/context-mode.
+  const root = join(base, "npm", "lib", "node_modules", "@mxalbert", "context-mode");
   const scriptsDir = join(root, "scripts");
   const hooksDir = join(root, "hooks");
   mkdirSync(scriptsDir, { recursive: true });

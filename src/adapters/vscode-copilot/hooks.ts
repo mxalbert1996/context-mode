@@ -104,7 +104,7 @@ export function isContextModeHook(
  *
  * For users without a global install, the recovery path is the same as
  * every other CLI-dispatcher adapter (cursor, codex):
- *   `npm install -g context-mode`
+ *   `npm install -g @mxalbert/context-mode`
  */
 export function buildHookCommand(hookType: HookType, _pluginRoot?: string): string {
   const scriptName = HOOK_SCRIPTS[hookType];

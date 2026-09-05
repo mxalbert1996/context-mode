@@ -139,7 +139,7 @@ npm publish
 
 Verify publication:
 ```bash
-npm view context-mode version  # should show new version
+npm view @mxalbert/context-mode version  # should show new version
 ```
 
 ### 6. Sync Branches
@@ -201,7 +201,7 @@ Before declaring release complete:
 - [ ] `npm publish` — package on npm registry
 - [ ] `next` branch synced with `main`
 - [ ] Stale remote branches cleaned (user approved)
-- [ ] Verify: `npm view context-mode version` shows new version
+- [ ] Verify: `npm view @mxalbert/context-mode version` shows new version
 
 ## Rollback Plan
 
@@ -209,10 +209,10 @@ If something goes wrong after publish:
 
 ```bash
 # Unpublish within 72 hours (npm policy)
-npm unpublish context-mode@{BAD_VERSION}
+npm unpublish @mxalbert/context-mode@{BAD_VERSION}
 
 # Or deprecate
-npm deprecate context-mode@{BAD_VERSION} "Known issue: {description}"
+npm deprecate @mxalbert/context-mode@{BAD_VERSION} "Known issue: {description}"
 
 # Revert git
 git revert HEAD

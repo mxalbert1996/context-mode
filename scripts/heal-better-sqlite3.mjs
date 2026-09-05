@@ -28,8 +28,8 @@
  * function never throws. Caller will fail naturally on first DB open if
  * heal could not produce a working binding.
  *
- * @see https://github.com/mksglu/context-mode/issues/408
- * @see https://github.com/mksglu/context-mode/issues/533
+ * @see https://github.com/mxalbert1996/context-mode/issues/408
+ * @see https://github.com/mxalbert1996/context-mode/issues/533
  *
  * Windows VS 2026+ detection:
  *   node-gyp has a hardcoded internal-version→year map. VS 2026 (internal

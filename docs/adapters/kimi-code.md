@@ -11,7 +11,7 @@ Kimi Code CLI uses a JSON stdin/stdout hook paradigm similar to Claude Code and 
 - Kimi Code CLI installed (`kimi` binary in PATH)
 - `context-mode` installed globally:
   ```bash
-  npm install -g context-mode
+  npm install -g @mxalbert/context-mode
   ```
 
 ## Capabilities

@@ -51,8 +51,8 @@ Before writing, read these files and use ONLY verified numbers:
 | Current version | `package.json` field `version` |
 | Platform count | `src/adapters/detect.ts` (count platforms in validPlatforms array) |
 | Adapter count | `tests/adapters/` (count test files) |
-| GitHub stars | `gh api repos/mksglu/context-mode --jq '.stargazers_count'` |
-| GitHub forks | `gh api repos/mksglu/context-mode --jq '.forks_count'` |
+| GitHub stars | `gh api repos/mxalbert1996/context-mode --jq '.stargazers_count'` |
+| GitHub forks | `gh api repos/mxalbert1996/context-mode --jq '.forks_count'` |
 | Open issues | `gh issue list --state open --json number --jq 'length'` |
 | Recent release | `gh release list --limit 1` |
 

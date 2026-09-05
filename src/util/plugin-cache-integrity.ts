@@ -147,7 +147,7 @@ export function checkPluginCacheIntegritySync(
         detail:
           `partial install — critical launch files missing: ${launchMissing.join(", ")} ` +
           `(integrity helper also missing: ${cachedError}); the MCP server cannot start. ` +
-          `Reinstall: npm install -g context-mode@latest`,
+          `Reinstall: npm install -g @mxalbert/context-mode@latest`,
       };
     }
     return {

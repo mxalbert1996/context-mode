@@ -187,7 +187,7 @@ if (cacheMatch) {
 
         const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
         for (const [key, entries] of Object.entries(ip.plugins || {})) {
-          if (key !== "context-mode@context-mode") continue;
+          if (key !== "context-mode@@mxalbert/context-mode") continue;
           for (const entry of entries) {
             entry.installPath = newestDir;
             entry.version = newest;
@@ -203,7 +203,7 @@ if (cacheMatch) {
     if (existsSync(ipPath)) {
       const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
       for (const [key, entries] of Object.entries(ip.plugins || {})) {
-        if (key !== "context-mode@context-mode") continue;
+        if (key !== "context-mode@@mxalbert/context-mode") continue;
         for (const entry of entries) {
           const rp = entry.installPath;
           if (!rp || existsSync(rp) || rp === __dirname) continue;
@@ -235,12 +235,12 @@ if (cacheMatch) {
 //           Claude Code skips disabled plugins, so MCP never starts and
 //           the user has no /ctx-upgrade escape hatch.
 // Logic is shared verbatim with scripts/postinstall.mjs (single source of
-// truth) so users who fix themselves via `npm install -g context-mode`
+// truth) so users who fix themselves via `npm install -g @mxalbert/context-mode`
 // follow the exact same code path. Best-effort, never blocks MCP boot.
 try {
   const { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, sweepStaleMcpJson } =
     await import("./scripts/heal-installed-plugins.mjs");
-  const pluginKey = "context-mode@context-mode";
+  const pluginKey = "context-mode@@mxalbert/context-mode";
   const claudeConfigDir = resolveClaudeConfigDir();
   const registryPath = resolve(claudeConfigDir, "plugins", "installed_plugins.json");
   const pluginCacheRoot = resolve(claudeConfigDir, "plugins", "cache");
@@ -335,7 +335,7 @@ try{
   const cacheRoot=resolve(cfgDir(),"plugins","cache");
   const ip=JSON.parse(readFileSync(f,"utf-8"));
   for(const[k,es]of Object.entries(ip.plugins||{})){
-    if(k!=="context-mode@context-mode")continue;
+    if(k!=="context-mode@@mxalbert/context-mode")continue;
     for(const e of es){
       const p=e.installPath;
       if(!p)continue;

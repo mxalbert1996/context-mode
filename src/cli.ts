@@ -47,6 +47,7 @@ import { discoverSiblingMcpPids, killSiblingMcpServers } from "./util/sibling-mc
 // mcpServers args. Single source of truth shared with start.mjs HEAL block + postinstall.
 // @ts-expect-error — JS module, no TS declarations
 import { healPluginJsonMcpServers, sweepStaleMcpJson } from "../scripts/heal-installed-plugins.mjs";
+import { NPM_LATEST_URL, PLUGIN_KEY, packageCachePath } from "./package-identity.js";
 // @ts-expect-error — JS module, no TS declarations
 import { detectWindowsVsYear } from "../scripts/heal-better-sqlite3.mjs";
 // Private 16-LOC copy of browserOpenArgv. Canonical version lives in src/server.ts;
@@ -352,10 +353,10 @@ function defaultPluginRoot(): string {
 
 // Opencode/Kilocode install plugins from npm into a per-package cache folder.
 // Layout (changed silently in late 2024 — see PR #376 / KiloCode#9503):
-//   POSIX  : ~/.cache/<platform>/packages/context-mode@latest/node_modules/context-mode
-//   Windows: %LOCALAPPDATA%\<platform>\packages\context-mode@latest\node_modules\context-mode
+//   POSIX  : ~/.cache/<platform>/packages/@mxalbert/context-mode@latest/node_modules/@mxalbert/context-mode
+//   Windows: %LOCALAPPDATA%\<platform>\packages\@mxalbert\context-mode@latest\node_modules\@mxalbert\context-mode
 function cachePluginRoot(platform: string): string {
-  const subPath = ["packages", "context-mode@latest", "node_modules", "context-mode"];
+  const subPath = packageCachePath();
   if (process.platform === "win32") {
     const localApp = process.env.LOCALAPPDATA;
     if (localApp) return resolve(localApp, platform, ...subPath);
@@ -387,7 +388,7 @@ async function fetchLatestVersion(): Promise<string> {
   // racing with process.exit() teardown on Node.js v24+.
   return new Promise((resolve) => {
     const req = httpsRequest(
-      "https://registry.npmjs.org/context-mode/latest",
+      NPM_LATEST_URL,
       { headers: { Connection: "close" } },
       (res) => {
         let raw = "";
@@ -744,8 +745,8 @@ async function doctor(): Promise<number> {
             "\n  V8 madvise(MADV_DONTNEED) SIGSEGV in better-sqlite3 (1-4/hour)." +
             "\n  Refs: https://github.com/nodejs/node/issues/62515" +
             "\n        https://github.com/mksglu/context-mode/issues/564" +
-            "\n  Fix:  nvm install 22.5 && nvm use 22.5 && npm install -g context-mode" +
-            "\n  Or:   curl -fsSL https://bun.sh/install | bash && bun add -g context-mode",
+            "\n  Fix:  nvm install 22.5 && nvm use 22.5 && npm install -g @mxalbert/context-mode" +
+            "\n  Or:   curl -fsSL https://bun.sh/install | bash && bun add -g @mxalbert/context-mode",
           ),
       );
     }
@@ -1550,7 +1551,7 @@ async function upgrade(opts?: { platform?: string }) {
         const ipPath = resolve(resolveClaudeConfigDir(), "plugins", "installed_plugins.json");
         if (existsSync(ipPath)) {
           const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
-          const entries = ip?.plugins?.["context-mode@context-mode"];
+          const entries = ip?.plugins?.[PLUGIN_KEY];
           if (Array.isArray(entries)) {
             for (const entry of entries) {
               const ip2 = entry?.installPath;
@@ -1586,7 +1587,7 @@ async function upgrade(opts?: { platform?: string }) {
       // truth shared with start.mjs HEAL block + postinstall.
       try {
         const pluginCacheRoot = resolve(resolveClaudeConfigDir(), "plugins", "cache");
-        const pluginKey = "context-mode@context-mode";
+        const pluginKey = PLUGIN_KEY;
         const firstPass = healPluginJsonMcpServers({ pluginRoot, pluginCacheRoot, pluginKey });
         if (firstPass && firstPass.error) {
           throw new Error(firstPass.error);
@@ -1616,7 +1617,7 @@ async function upgrade(opts?: { platform?: string }) {
       // block + postinstall.
       try {
         const pluginCacheRoot = resolve(resolveClaudeConfigDir(), "plugins", "cache");
-        const pluginKey = "context-mode@context-mode";
+        const pluginKey = PLUGIN_KEY;
         const firstSweep = sweepStaleMcpJson({ pluginCacheRoot, pluginKey });
         if (firstSweep && firstSweep.removed && firstSweep.removed.length > 0) {
           p.log.info(color.dim(`  Swept ${firstSweep.removed.length} stale .mcp.json file(s) from cache`));
@@ -1808,7 +1809,7 @@ async function upgrade(opts?: { platform?: string }) {
           catch { cacheRootCanon = cacheRoot; }
           const cacheRootWithSep = cacheRootCanon + sep;
           const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
-          const entries = registry?.plugins?.["context-mode@context-mode"];
+          const entries = registry?.plugins?.[PLUGIN_KEY];
           if (Array.isArray(entries)) {
             for (const entry of entries) {
               const installPath = entry?.installPath;
@@ -2009,7 +2010,7 @@ function statuslineForward(): void {
       catch { cacheRootCanon = cacheRoot; }
       const cacheRootWithSep = cacheRootCanon + sep;
       const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
-      const entries = registry?.plugins?.["context-mode@context-mode"];
+      const entries = registry?.plugins?.[PLUGIN_KEY];
       if (Array.isArray(entries)) {
         for (const entry of entries) {
           const installPath = entry?.installPath;

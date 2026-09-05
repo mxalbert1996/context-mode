@@ -30,6 +30,7 @@ import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 
 import { BaseAdapter, resolveContextModeDataRoot } from "../base.js";
+import { PACKAGE_NAME } from "../../package-identity.js";
 import { stripJsonComments } from "../../util/jsonc.js";
 
 import type {
@@ -476,7 +477,7 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "plugin",
-              command: "context-mode",
+              command: PACKAGE_NAME,
             },
           ],
         },
@@ -487,7 +488,7 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "plugin",
-              command: "context-mode",
+              command: PACKAGE_NAME,
             },
           ],
         },
@@ -498,7 +499,7 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "plugin",
-              command: "context-mode",
+              command: PACKAGE_NAME,
             },
           ],
         },
@@ -700,7 +701,7 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
       if (pluginEntriesIncludeContextMode(plugins)) {
         changes.push("context-mode already in plugin array");
       } else {
-        plugins.push("context-mode");
+        plugins.push(PACKAGE_NAME);
         changes.push("Added context-mode to plugin array");
       }
       settings.plugin = plugins;
@@ -710,13 +711,13 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
       if (pluginEntriesIncludeContextMode(plugins)) {
         changes.push("context-mode already in plugins array");
       } else {
-        plugins.push("context-mode");
+        plugins.push(PACKAGE_NAME);
         changes.push("Added context-mode to plugins array");
       }
       settings.plugins = plugins;
     }
     if (!v1KeyPresent && !v2KeyPresent) {
-      settings.plugin = ["context-mode"];
+      settings.plugin = [PACKAGE_NAME];
       changes.push("Added context-mode to plugin array");
     }
 

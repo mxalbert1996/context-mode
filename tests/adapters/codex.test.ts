@@ -19,7 +19,7 @@ function pluginEnabledSettings(extra = ""): string {
   return `[features]
 hooks = true
 
-[plugins."context-mode@context-mode"]
+[plugins."context-mode@@mxalbert/context-mode"]
 enabled = true
 
 ${extra}`;
@@ -30,7 +30,7 @@ function pluginListOutput(pluginRoot: string): string {
 /Users/test/.codex/.tmp/marketplaces/context-mode/.agents/plugins/marketplace.json
 
 PLUGIN                    STATUS              VERSION  PATH
-context-mode@context-mode  installed, enabled  1.0.162  ${pluginRoot}
+context-mode@@mxalbert/context-mode  installed, enabled  1.0.162  ${pluginRoot}
 `;
 }
 
@@ -752,7 +752,7 @@ trusted_hash = "sha256:stale"
 
       const preTool = results.find((result) => result.check === "PreToolUse hook");
       expect(preTool?.status).toBe("pass");
-      expect(preTool?.message).toMatch(/context-mode@context-mode plugin/);
+      expect(preTool?.message).toMatch(/context-mode@@mxalbert\/context-mode plugin/);
       const duplicate = results.find((result) => result.check === "PreToolUse plugin duplicate");
       expect(duplicate?.status).toBe("warn");
       expect(duplicate?.message).toMatch(/configured in both/);

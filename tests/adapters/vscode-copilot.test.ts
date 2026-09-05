@@ -228,7 +228,7 @@ describe("VSCodeCopilotAdapter", () => {
   // works for every install pattern that has a `bin` entry on PATH
   // (npm-global, brew, asdf, nvm, volta, fnm — all wire `npm install -g`
   // through the `bin` field). For users without global install, the
-  // workaround is `npm install -g context-mode` — same as every other
+  // workaround is `npm install -g @mxalbert/context-mode` — same as every other
   // adapter that emits CLI-dispatcher commands (cursor, codex).
 
   describe("buildHookCommand portability (Issue #613 Tier C lock)", () => {

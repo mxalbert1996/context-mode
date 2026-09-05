@@ -129,14 +129,14 @@ describe("Issue #539 — Claude Code inside VS Code disambiguation", () => {
         JSON.stringify({
           version: 2,
           plugins: {
-            "context-mode@context-mode": [
+            "context-mode@@mxalbert/context-mode": [
               {
                 installPath:
-                  "/Users/me/.claude/plugins/cache/context-mode/context-mode/1.0.121",
+                  "/Users/me/.claude/plugins/cache/context-mode/@mxalbert/context-mode/1.0.169",
               },
             ],
           },
-          enabledPlugins: { "context-mode@context-mode": true },
+          enabledPlugins: { "context-mode@@mxalbert/context-mode": true },
         }),
       );
 

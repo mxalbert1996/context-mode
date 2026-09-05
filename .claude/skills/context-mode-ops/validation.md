@@ -49,7 +49,7 @@ When a claim cannot be verified, comment on the issue BEFORE implementing:
 ```markdown
 We want to address this but need to verify the underlying behavior first.
 Could you provide:
-1. Output from: `npx context-mode doctor` (or run `ctx-debug.sh`)
+1. Output from: `npx @mxalbert/context-mode doctor` (or run `ctx-debug.sh`)
 2. Exact reproduction steps
 3. Platform version, adapter, and OS
 

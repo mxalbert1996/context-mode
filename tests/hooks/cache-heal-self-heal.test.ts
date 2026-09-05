@@ -555,9 +555,11 @@ describe("sweepStaleMcpJson", () => {
   } {
     const dir = makeTmp("ctx-sweep-");
     // Match the real cache layout: <cacheRoot>/<owner>/<plugin>/<version>/
+    // Registry key "<pluginId>@<npmPackage>" → owner dir = id segment,
+    // plugin dir = scoped package segment (src/package-identity.ts).
     const pluginCacheRoot = join(dir, "cache");
-    const pluginKey = "context-mode@context-mode";
-    const ownerDir = join(pluginCacheRoot, "context-mode", "context-mode");
+    const pluginKey = "context-mode@@mxalbert/context-mode";
+    const ownerDir = join(pluginCacheRoot, "context-mode", "@mxalbert", "context-mode");
     const versionDirs = ["1.0.135", "1.0.136", "1.0.137"].map((v) =>
       join(ownerDir, v),
     );
@@ -607,12 +609,12 @@ describe("sweepStaleMcpJson", () => {
   test("no-op when no .mcp.json files exist in any version dir", () => {
     const dir = makeTmp("ctx-sweep-empty-");
     const pluginCacheRoot = join(dir, "cache");
-    const ownerDir = join(pluginCacheRoot, "context-mode", "context-mode");
+    const ownerDir = join(pluginCacheRoot, "context-mode", "@mxalbert", "context-mode");
     makeDir(join(ownerDir, "1.0.137"));
 
     const result = sweepStaleMcpJson({
       pluginCacheRoot,
-      pluginKey: "context-mode@context-mode",
+      pluginKey: "context-mode@@mxalbert/context-mode",
     });
 
     expect(result.removed).toEqual([]);
@@ -622,7 +624,7 @@ describe("sweepStaleMcpJson", () => {
     const dir = makeTmp("ctx-sweep-missing-");
     const result = sweepStaleMcpJson({
       pluginCacheRoot: join(dir, "absent"),
-      pluginKey: "context-mode@context-mode",
+      pluginKey: "context-mode@@mxalbert/context-mode",
     });
     expect(result.removed).toEqual([]);
     expect(result.skipped).toBe("no-cache-root");

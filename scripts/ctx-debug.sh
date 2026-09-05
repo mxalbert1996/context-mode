@@ -328,7 +328,7 @@ check "server.bundle.mjs exists" "$([ -f "$PLUGIN_ROOT/server.bundle.mjs" ] && e
 check "cli.bundle.mjs exists" "$([ -f "$PLUGIN_ROOT/cli.bundle.mjs" ] && echo true || echo false)"
 
 # npm latest
-NPM_LATEST="$(safe_cmd_quiet npm view context-mode version 2>/dev/null)"
+NPM_LATEST="$(safe_cmd_quiet npm view @mxalbert/context-mode version 2>/dev/null)"
 if [ -n "$NPM_LATEST" ]; then
   kv "npm latest" "$NPM_LATEST"
   if [ -n "$LOCAL_VER" ] && [ "$LOCAL_VER" != "$NPM_LATEST" ]; then
@@ -991,7 +991,7 @@ done
 # HTTPS connectivity
 NPM_TLS="$(timed 10 node -e "
   const https = require('https');
-  const req = https.get('https://registry.npmjs.org/context-mode', { timeout: 5000 }, (res) => {
+  const req = https.get('https://registry.npmjs.org/@mxalbert%2Fcontext-mode', { timeout: 5000 }, (res) => {
     console.log('PASS: HTTP ' + res.statusCode);
     req.destroy();
   });

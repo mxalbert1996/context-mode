@@ -16,7 +16,7 @@ body:
 
         1. **Reproduce the bug** with a specific prompt (paste it below)
         2. **Ask your agent to debug it**: _"Read the context-mode hooks source and find why this error occurs"_
-        3. **Write a failing test** (RED) and fix it (GREEN) — see [CONTRIBUTING.md](https://github.com/mksglu/context-mode/blob/main/CONTRIBUTING.md)
+        3. **Write a failing test** (RED) and fix it (GREEN) — see [CONTRIBUTING.md](https://github.com/mxalbert1996/context-mode/blob/main/CONTRIBUTING.md)
         4. **Open a PR** against `next` branch — CI verifies on Ubuntu, macOS, and Windows
 
         **Opening an issue does NOT guarantee a fix.** I welcome issues for discussion and triage, but the fastest path to resolution is a PR. If you can describe the bug, your AI agent can fix it.
@@ -32,7 +32,7 @@ body:
         ---
 
         **Before you file:**
-        1. [Search existing issues](https://github.com/mksglu/context-mode/issues)
+        1. [Search existing issues](https://github.com/mxalbert1996/context-mode/issues)
         2. Run `/context-mode:ctx-upgrade` and restart your session
         3. If the issue persists on the latest version, fill out every field below
 
@@ -121,7 +121,7 @@ body:
       description: |
         Minimal steps so anyone on your platform can reproduce this.
       placeholder: |
-        1. Install: npm install -g context-mode@1.0.50
+        1. Install: npm install -g @mxalbert/context-mode@1.0.50
         2. Configure: (paste your mcp config)
         3. Send prompt: "..."
         4. See error: "..."

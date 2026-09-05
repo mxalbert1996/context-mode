@@ -51,6 +51,15 @@ describe("start.mjs env bootstrap — plugin path no-poison", () => {
     mkdirSync(pluginPath, { recursive: true });
     return pluginPath;
   };
+  // v2.0.0 fork rename: the npm package is scoped, so fresh installs cache
+  // under plugins/cache/<pluginId>/@mxalbert/context-mode/<version>.
+  const makeScopedPluginDir = () => {
+    const root = mkdtempSync(join(tmpdir(), "ctx-fake-plugin-"));
+    cleanup.push(root);
+    const pluginPath = join(root, ".claude", "plugins", "cache", "context-mode", "@mxalbert", "context-mode", "1.0.169");
+    mkdirSync(pluginPath, { recursive: true });
+    return pluginPath;
+  };
   const makeCodexPluginDir = () => {
     const root = mkdtempSync(join(tmpdir(), "ctx-fake-plugin-"));
     cleanup.push(root);
@@ -103,5 +112,14 @@ describe("start.mjs env bootstrap — plugin path no-poison", () => {
       preExisting: { CLAUDE_PROJECT_DIR: "/Users/x/preset/proj" },
     });
     expect(result.CLAUDE_PROJECT_DIR).toBe("/Users/x/preset/proj");
+  });
+
+  it("does NOT set CLAUDE_PROJECT_DIR or CONTEXT_MODE_PROJECT_DIR when cwd is a scoped-package plugin install path", () => {
+    // Fresh installs of the renamed @mxalbert/context-mode package cache
+    // under plugins/cache/<id>/@mxalbert/context-mode/<version>.
+    const pluginPath = makeScopedPluginDir();
+    const result = runStartMjsBootstrap({ cwd: pluginPath });
+    expect(result.CLAUDE_PROJECT_DIR).toBeUndefined();
+    expect(result.CONTEXT_MODE_PROJECT_DIR).toBeUndefined();
   });
 });

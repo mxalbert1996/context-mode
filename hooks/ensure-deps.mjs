@@ -14,9 +14,9 @@
  * both the MCP server AND hooks from ABI mismatch crashes when users
  * have multiple Node versions via mise/volta/fnm/nvm.
  *
- * @see https://github.com/mksglu/context-mode/issues/148
- * @see https://github.com/mksglu/context-mode/issues/172
- * @see https://github.com/mksglu/context-mode/issues/203
+ * @see https://github.com/mxalbert1996/context-mode/issues/148
+ * @see https://github.com/mxalbert1996/context-mode/issues/172
+ * @see https://github.com/mxalbert1996/context-mode/issues/203
  */
 
 import { existsSync, copyFileSync, renameSync, unlinkSync } from "node:fs";

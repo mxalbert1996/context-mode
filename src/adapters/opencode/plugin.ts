@@ -37,10 +37,10 @@
  *   - experimental.chat.system.transform — ROUTING_BLOCK + resume snapshot injection (OC-1)
  *   - chat.message         — User-prompt capture w/ CCv2 inline filter (OC-2) + AGENTS.md scan (OC-4)
  *
- * KiloCode loads this via: import("context-mode") → expects default export
+ * KiloCode loads this via: import("@mxalbert/context-mode") → expects default export
  * with shape { server: (input) => Promise<Hooks> } (PluginModule).
  *
- * OpenCode loads this via: import("context-mode/plugin") → also supports
+ * OpenCode loads this via: import("@mxalbert/context-mode/plugin") → also supports
  * the named export ContextModePlugin for backward compat.
  *
  * Constraints:
@@ -1923,7 +1923,7 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
 // KiloCode PluginModule / OpenCode v2 PluginModule: default export with
 // { id, server, setup } shape — v1 hosts call server(input), v2 hosts call
 // setup(ctx). No `tui` marker (would invalidate server loading).
-// OpenCode compat: named exports for direct import("context-mode/plugin")
+// OpenCode compat: named exports for direct import("@mxalbert/context-mode/plugin")
 export default {
   id: "context-mode",
   server: createContextModePlugin,

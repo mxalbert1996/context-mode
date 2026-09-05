@@ -12,12 +12,12 @@ context-mode is an MCP server + hook bundle that keeps long-running Cursor agent
 
 ## Install
 
-After clicking **Install** in the Cursor Plugins panel, the plugin registers an MCP server that runs `npx -y context-mode`. The first invocation downloads the package from npm; subsequent invocations are cached.
+After clicking **Install** in the Cursor Plugins panel, the plugin registers an MCP server that runs `npx -y @mxalbert/context-mode`. The first invocation downloads the package from npm; subsequent invocations are cached.
 
 If you prefer pinning a global install (faster cold start):
 
 ```bash
-npm i -g context-mode
+npm i -g @mxalbert/context-mode
 ```
 
 The plugin manifest will pick up the global binary automatically.
@@ -32,7 +32,7 @@ and a symlink elsewhere.
 **Windows (PowerShell):**
 
 ```powershell
-git clone https://github.com/mksglu/context-mode.git
+git clone https://github.com/mxalbert1996/context-mode.git
 cd context-mode
 robocopy . "$env:USERPROFILE\.cursor\plugins\local\context-mode" /MIR `
   /XD node_modules .git build insight web tests scripts .vscode `
@@ -42,7 +42,7 @@ robocopy . "$env:USERPROFILE\.cursor\plugins\local\context-mode" /MIR `
 **macOS / Linux:**
 
 ```bash
-git clone https://github.com/mksglu/context-mode.git
+git clone https://github.com/mxalbert1996/context-mode.git
 ln -s "$PWD/context-mode" ~/.cursor/plugins/local/context-mode
 ```
 
@@ -55,7 +55,7 @@ re-run the same `robocopy` / `ln -s` line (`/MIR` handles updates).
 Run from a project shell:
 
 ```bash
-npx context-mode doctor
+npx @mxalbert/context-mode doctor
 ```
 
 Expected output includes:
@@ -94,16 +94,16 @@ The plugin's `hooks/cursor/hooks.json` registers five events:
 | `afterAgentResponse` | Captures the produced assistant text into session telemetry |
 | `stop` | Records turn lifecycle (status, loop_count) |
 
-Each event runs `npx -y context-mode hook cursor <event>`. Cold start is ~4-5s; trade-off for zero-install distribution.
+Each event runs `npx -y @mxalbert/context-mode hook cursor <event>`. Cold start is ~4-5s; trade-off for zero-install distribution.
 
 ## Known limitations
 
 - **`additional_context` not surfaced** — Cursor's hook payload accepts `additional_context` but does not currently inject it into the model's context (forum [#155689](https://forum.cursor.com/t/native-posttooluse-hooks-accept-and-log-additional-context-successfully-but-the-injected-context-is-not-surfaced-to-the-model/155689), [#156157](https://forum.cursor.com/t/cursor-hooks-additional-context-not-injected-in-agent-context-in-posttooluse/156157)). The `.mdc` rule file is the primary routing channel until Cursor fixes this upstream.
-- **No `${PLUGIN_ROOT}` env var** — Cursor manifests cannot reference the plugin install dir, so the MCP server still requires `npm` or `npx` on `PATH`. Documented in the project's [platform-support.md](https://github.com/mksglu/context-mode/blob/next/docs/platform-support.md).
+- **No `${PLUGIN_ROOT}` env var** — Cursor manifests cannot reference the plugin install dir, so the MCP server still requires `npm` or `npx` on `PATH`. Documented in the project's [platform-support.md](https://github.com/mxalbert1996/context-mode/blob/next/docs/platform-support.md).
 
 ## Links
 
-- Project repo: <https://github.com/mksglu/context-mode>
-- Full documentation: <https://github.com/mksglu/context-mode#readme>
-- Issue tracker: <https://github.com/mksglu/context-mode/issues>
+- Project repo: <https://github.com/mxalbert1996/context-mode>
+- Full documentation: <https://github.com/mxalbert1996/context-mode#readme>
+- Issue tracker: <https://github.com/mxalbert1996/context-mode/issues>
 - License: Elastic-2.0

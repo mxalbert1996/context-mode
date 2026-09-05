@@ -172,7 +172,7 @@ OpenCode uses a TypeScript plugin paradigm instead of JSON stdin/stdout. Hooks a
 
 **Configuration:**
 - `opencode.json` or `.opencode/opencode.json`
-- Plugin registered in the `plugin` array with npm package names
+- Plugin registered in the `plugin` array (v1) or `plugins` array (opencode v2); context-mode supports both keys and keeps existing entries intact
 - `ctx_*` tools are native plugin tools, not `mcp__server__tool` calls
 - KiloCode uses the same plugin path via `kilo.json`; `context-mode upgrade` removes stale `mcp.context-mode` entries for both hosts while preserving other MCP servers
 

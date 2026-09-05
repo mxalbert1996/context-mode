@@ -23,9 +23,15 @@ The stated goal was to fix issue #560: @ishabana reported a 5-process
 scenario where multiple context-mode MCP servers writing the same on-
 disk SQLite content store unbounded the WAL — readers held shared locks
 indefinitely so `wal_checkpoint(TRUNCATE)` never fired, the only
-existing truncation path is `closeDB`'s checkpoint on graceful exit
+existing truncation path was `closeDB`'s checkpoint on graceful exit
 (which #559's zombie servers never reached), and the result was
 238MB+ WAL files plus `ctx_search` hangs.
+
+> **Update:** that close-time `wal_checkpoint(TRUNCATE)` was later removed
+> from `closeDB` as part of the disk-I/O-error hardening (#992/#905,
+> upstream PR #1056) — closing must not mutate database files another
+> process may hold open. See
+> [opencode-v2-compatibility.md](../opencode-v2-compatibility.md).
 
 v1.0.129 added a tmpdir skip-gate to both primitives because the test
 suite (which opens many DBs on tmp paths in the same process) tripped

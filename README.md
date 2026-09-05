@@ -483,13 +483,13 @@ Full configs: [`configs/cursor/hooks.json`](configs/cursor/hooks.json) | [`confi
 
    The `plugin` entry registers all 11 `ctx_*` tools natively and enables hooks — OpenCode calls context-mode's TypeScript plugin in-process, so there is no redundant stdio MCP child per session.
 
-2. *(Optional)* Copy the routing rules file. The model needs an `AGENTS.md` file for routing awareness:
+2. *(Optional)* Copy the routing rules file:
 
    ```bash
    cp node_modules/context-mode/configs/opencode/AGENTS.md AGENTS.md
    ```
 
-   This tells the model which tools to use and which commands are blocked. Without it, hooks still enforce routing — but the model won't know *why* a command was denied.
+   The plugin already injects its routing guidance (which tools to use, which commands are blocked and why) into the system prompt on every model dispatch — on both opencode v1 and v2. The copy is only useful if you want the same guidance also visible as native project rules (`AGENTS.md`) for sessions without the plugin. Your own `AGENTS.md`/`CLAUDE.md`/`CONTEXT.md` rules are captured automatically for session continuity — no copy needed.
 
 3. Restart OpenCode.
 
@@ -523,7 +523,7 @@ Full configs: [`configs/opencode/opencode.json`](configs/opencode/opencode.json)
 
    The `plugin` entry registers all 11 `ctx_*` tools natively and enables hooks — KiloCode calls context-mode's TypeScript plugin in-process, so there is no redundant stdio MCP child per session.
 
-2. *(Optional)* Copy the routing rules file. KiloCode shares the OpenCode plugin architecture, so the model needs an `AGENTS.md` file for routing awareness:
+2. *(Optional)* Copy the routing rules file. KiloCode shares the OpenCode plugin architecture; the plugin already injects its routing guidance into the system prompt on every model dispatch, so the copy is only useful if you want the guidance also visible as native project rules:
 
    ```bash
    cp node_modules/context-mode/configs/opencode/AGENTS.md AGENTS.md

@@ -57,7 +57,7 @@
     "./server": "./build/adapters/opencode/plugin.js"
   },
   "bin": {
-    "context-mode": "cli.bundle.mjs"
+    "context-mode": "./cli.bundle.mjs"
   },
   "files": [
     "build",

@@ -338,16 +338,27 @@ export function loadDatabase(): typeof DatabaseConstructor {
  * - Dramatically faster writes (no full-page sync on each commit)
  * NORMAL synchronous is safe under WAL and avoids an extra fsync per
  * transaction.
+ *
+ * v1.0.187 — mmap_size is OPT-IN (upstream #992/#905; PRs #1030/#1056):
+ * a default 256MB mmap over DB files that are shared across processes
+ * turns transient resource pressure into SQLITE_IOERR ("disk I/O error")
+ * on otherwise-healthy disks. The pragma is now applied ONLY when
+ * CONTEXT_MODE_DB_MMAP_SIZE (bytes) is set to a valid non-negative
+ * integer; when unset, mmap_size is NOT touched at all (SQLite default).
  */
-export function applyWALPragmas(db: DatabaseInstance): void {
+export function applyWALPragmas(
+  db: DatabaseInstance,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
-  // Memory-map the DB file for read-heavy FTS5 search workloads.
-  // Eliminates read() syscalls — the kernel serves pages directly from
-  // the page cache. 256MB is a safe upper bound (SQLite only maps up to
-  // the actual file size). Falls back gracefully on platforms where mmap
-  // is unavailable or restricted.
-  try { db.pragma("mmap_size = 268435456"); } catch { /* unsupported runtime */ }
+  // Memory-map the DB file for read-heavy FTS5 search workloads — opt-in
+  // only (see docblock above). Falls back gracefully on platforms where
+  // mmap is unavailable or restricted.
+  const mmapSize = resolveMmapSizeFromEnv(env);
+  if (mmapSize !== null) {
+    try { db.pragma(`mmap_size = ${mmapSize}`); } catch { /* unsupported runtime */ }
+  }
   // NOTE: `locking_mode = EXCLUSIVE` is intentionally NOT applied here.
   // ALL DBs built on this helper — ContentStore (FTS5 shared knowledge
   // base) AND SessionDB (per-project events) — are multi-writer-safe by
@@ -355,6 +366,25 @@ export function applyWALPragmas(db: DatabaseInstance): void {
   // SQLITE_BUSY natively. EXCLUSIVE locking is opt-out, never opt-in
   // from a base class shared by multi-writer consumers.
   // See docs/adr/0001-sessiondb-multi-writer.md for the v1.0.130 ADR.
+}
+
+/**
+ * Parse the opt-in mmap size (bytes) from CONTEXT_MODE_DB_MMAP_SIZE.
+ * Returns null when the variable is unset, empty, or not a non-negative
+ * integer — callers must then skip the mmap_size pragma entirely so the
+ * SQLite default applies.
+ *
+ * Exported so the opt-in contract is unit-testable without mutating
+ * process.env at call sites.
+ */
+export function resolveMmapSizeFromEnv(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = env.CONTEXT_MODE_DB_MMAP_SIZE;
+  if (raw === undefined || raw === null) return null;
+  const trimmed = String(raw).trim();
+  if (trimmed === "") return null;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) return null;
+  return n;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -392,12 +422,17 @@ export function deleteDBFiles(dbPath: string): void {
 /**
  * Safely close a database connection. Swallows errors so callers can
  * always call this in a finally/cleanup path without try/catch.
+ *
+ * v1.0.187 — the close-time `wal_checkpoint(TRUNCATE)` was REMOVED
+ * (upstream #992/#905; PRs #1030/#1056/#880). A TRUNCATE checkpoint is a
+ * *cross-process mutation*: when a hook/CLI/statusline process still holds
+ * the same DB, the checkpoint races its WAL readers/writers and surfaces
+ * as SQLITE_IOERR ("disk I/O error") on healthy disks. SQLite already
+ * performs a best-effort (non-destructive) checkpoint inside close();
+ * the only sidecar cleanup this layer does is cleanOrphanedWALFiles,
+ * which deletes -wal/-shm when the main DB file is absent.
  */
 export function closeDB(db: DatabaseInstance): void {
-  try {
-    // Checkpoint WAL before close to prevent contention on restart (#103)
-    db.pragma("wal_checkpoint(TRUNCATE)");
-  } catch { /* WAL may not be active */ }
   try {
     db.close();
   } catch {
@@ -423,10 +458,59 @@ export function defaultDBPath(prefix: string = "context-mode"): string {
 // ─────────────────────────────────────────────────────────
 
 /**
- * Retry a DB operation with exponential backoff on SQLITE_BUSY errors.
- * Catches errors containing "SQLITE_BUSY" or "database is locked" and
- * retries up to 3 times with delays: 100ms, 500ms, 2000ms.
- * If all retries fail, throws a descriptive error.
+ * Build a single searchable signature string from an arbitrary thrown
+ * value. Covers the shapes SQLite drivers actually throw:
+ * - Error with `code` (better-sqlite3 / node:sqlite SqliteError): code + message
+ * - Plain Error / string (bun:sqlite): message text
+ * - Non-Error objects with `code` and/or `message` properties
+ */
+function errorSignature(err: unknown): string {
+  if (err instanceof Error) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return typeof code === "string" ? `${code} ${err.message}` : err.message;
+  }
+  if (typeof err === "string") return err;
+  if (err !== null && typeof err === "object") {
+    const code = (err as { code?: unknown }).code;
+    const message = (err as { message?: unknown }).message;
+    const parts = [
+      typeof code === "string" ? code : "",
+      typeof message === "string" ? message : "",
+    ].filter(Boolean);
+    return parts.length > 0 ? parts.join(" ") : String(err);
+  }
+  return String(err);
+}
+
+/**
+ * Transient SQLite errors that warrant a retry (v1.0.187, upstream
+ * #992/#905; PRs #1030/#1056/#880):
+ * - SQLITE_BUSY / "database is locked" — writer contention; the existing
+ *   busy_timeout + backoff contract.
+ * - SQLITE_IOERR / "disk I/O error" — frequently TRANSIENT on healthy
+ *   disks (mmap pressure, checkpoint races, AV/EDR scans). Treating it
+ *   as fatal turned recoverable blips into user-visible failures.
+ *
+ * Corruption signatures (SQLITE_CORRUPT / SQLITE_NOTADB / "file is not a
+ * database") are deliberately NOT retried — see isSQLiteCorruptionError.
+ * Non-Error throw shapes ({ code } objects, strings) are classified the
+ * same way as Errors via errorSignature().
+ */
+export function isTransientSqliteError(err: unknown): boolean {
+  const sig = errorSignature(err);
+  return (
+    sig.includes("SQLITE_BUSY") ||
+    sig.includes("database is locked") ||
+    sig.includes("SQLITE_IOERR") ||
+    /disk i\/o error/i.test(sig)
+  );
+}
+
+/**
+ * Retry a DB operation with exponential backoff on transient SQLite
+ * errors: SQLITE_BUSY ("database is locked") and SQLITE_IOERR
+ * ("disk I/O error"). Retries up to 3 times with delays: 100ms, 500ms,
+ * 2000ms. If all retries fail, throws a descriptive error.
  * Pass custom delays for testing (e.g., [0, 0, 0] to skip waits).
  */
 export function withRetry<T>(fn: () => T, delays: number[] = [100, 500, 2000]): T {
@@ -435,11 +519,10 @@ export function withRetry<T>(fn: () => T, delays: number[] = [100, 500, 2000]): 
     try {
       return fn();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes("SQLITE_BUSY") && !msg.includes("database is locked")) {
+      if (!isTransientSqliteError(err)) {
         throw err;
       }
-      lastError = err instanceof Error ? err : new Error(msg);
+      lastError = err instanceof Error ? err : new Error(errorSignature(err));
       if (attempt < delays.length) {
         const delay = delays[attempt];
         const start = Date.now();
@@ -448,7 +531,7 @@ export function withRetry<T>(fn: () => T, delays: number[] = [100, 500, 2000]): 
     }
   }
   throw new Error(
-    `SQLITE_BUSY: database is locked after ${delays.length} retries. ` +
+    `SQLITE_BUSY/SQLITE_IOERR: transient SQLite error after ${delays.length} retries. ` +
     `Original error: ${lastError?.message}`
   );
 }
@@ -481,6 +564,117 @@ export function renameCorruptDB(dbPath: string): void {
       renameSync(dbPath + suffix, `${dbPath}${suffix}.corrupt-${ts}`);
     } catch { /* file may not exist */ }
   }
+}
+
+// ─────────────────────────────────────────────────────────
+// DB error logging (v1.0.187)
+// ─────────────────────────────────────────────────────────
+
+/**
+ * Stable log prefix for swallowed DB failures. Neither db-base.ts nor
+ * session/db.ts has a host logger, so failures that were previously
+ * silent (best-effort schema migrations, read paths returning []/"" on
+ * error) go to stderr via console.error under this prefix.
+ */
+export const DB_LOG_PREFIX = "[context-mode:db]";
+
+/** Same op + code + message is logged at most once per window. */
+const DB_LOG_INTERVAL_MS = 30_000;
+
+/** Cap on the dedupe table so a high-cardinality error source can't grow it unbounded. */
+const DB_LOG_MAX_KEYS = 256;
+
+const _recentDbErrors = new Map<string, number>();
+
+/**
+ * Extract the SQLite error code (e.g. "SQLITE_IOERR") from an arbitrary
+ * thrown value, or "" when absent. better-sqlite3 and node:sqlite set
+ * `code` on SqliteError; bun:sqlite encodes it in the message instead.
+ */
+function extractErrorCode(err: unknown): string {
+  if (err instanceof Error) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return typeof code === "string" ? code : "";
+  }
+  if (err !== null && typeof err === "object") {
+    const code = (err as { code?: unknown }).code;
+    return typeof code === "string" ? code : "";
+  }
+  return "";
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  if (err !== null && typeof err === "object") {
+    const message = (err as { message?: unknown }).message;
+    if (typeof message === "string" && message) return message;
+  }
+  return String(err);
+}
+
+/**
+ * Log a swallowed DB failure to stderr with the stable
+ * `[context-mode:db]` prefix: operation name, error code, error message,
+ * and (when OPENCODE_DEBUG is set) the stack. The same op + code +
+ * message combination is rate-limited to one line per ~30s to avoid log
+ * storms from hot retry loops or batch scans. Logging must never throw.
+ *
+ * `detail` (e.g. a DB path) is optional context appended to the line and
+ * included in the dedupe key so different files don't suppress each
+ * other's diagnostics.
+ */
+export function logDbError(op: string, err: unknown, detail?: string, now: number = Date.now()): void {
+  try {
+    const code = extractErrorCode(err);
+    const message = errorMessage(err);
+    const detailSuffix = detail ? ` (${detail})` : "";
+    const dedupeKey = `${op}|${code}|${message}${detailSuffix}`;
+    const last = _recentDbErrors.get(dedupeKey);
+    if (last !== undefined && now - last < DB_LOG_INTERVAL_MS) return;
+
+    _recentDbErrors.set(dedupeKey, now);
+    if (_recentDbErrors.size > DB_LOG_MAX_KEYS) {
+      // A burst of >256 distinct errors inside one window can exceed the
+      // cap. First free genuinely expired keys, then HARD-evict the oldest
+      // entries (Map preserves insertion order) until the cap is restored —
+      // the table can never exceed DB_LOG_MAX_KEYS, and keys still within
+      // the cap keep their normal dedupe semantics.
+      for (const [key, ts] of _recentDbErrors) {
+        if (now - ts >= DB_LOG_INTERVAL_MS) _recentDbErrors.delete(key);
+      }
+      while (_recentDbErrors.size > DB_LOG_MAX_KEYS) {
+        const oldestKey = _recentDbErrors.keys().next().value;
+        if (oldestKey === undefined) break;
+        _recentDbErrors.delete(oldestKey);
+      }
+    }
+
+    const debugRaw = process.env.OPENCODE_DEBUG;
+    const debug = debugRaw !== undefined && debugRaw !== "" && debugRaw !== "0" && debugRaw !== "false";
+    const stack = debug && err instanceof Error && err.stack ? `\n${err.stack}` : "";
+    const codePart = code ? ` [${code}]` : "";
+    console.error(`${DB_LOG_PREFIX} ${op}${codePart}: ${message}${detailSuffix}${stack}`);
+  } catch {
+    // logging must never break the caller
+  }
+}
+
+/**
+ * Clear the log-dedupe table. Test-only: lets a test observe the first
+ * emission for a given op regardless of what earlier tests logged.
+ */
+export function resetDbErrorLogForTests(): void {
+  _recentDbErrors.clear();
+}
+
+/**
+ * Number of keys currently tracked in the log-dedupe table. Test-only:
+ * lets a test pin the DB_LOG_MAX_KEYS hard-cap (the table must never grow
+ * past the cap even under a burst of distinct errors inside one window).
+ */
+export function getRecentDbErrorCountForTests(): number {
+  return _recentDbErrors.size;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -559,6 +753,9 @@ export abstract class SQLiteBase {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (isSQLiteCorruptionError(msg)) {
+        // Surface the corruption + quarantine instead of silently swapping
+        // the file — users lose session history here and deserve a trace.
+        logDbError("SQLiteBase.open", err, dbPath);
         renameCorruptDB(dbPath);
         cleanOrphanedWALFiles(dbPath);
         try {

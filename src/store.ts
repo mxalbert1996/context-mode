@@ -1614,7 +1614,7 @@ export class ContentStore {
 
   close(): void {
     this.#optimizeFTS(); // defragment before close
-    closeDB(this.#db); // WAL checkpoint before close — important for persistent DBs
+    closeDB(this.#db); // safe close — no close-time checkpoint (cross-process mutation, see db-base.ts closeDB)
   }
 
   // ── Vocabulary Extraction ──

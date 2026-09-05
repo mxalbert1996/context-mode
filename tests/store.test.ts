@@ -1698,10 +1698,10 @@ describe("concurrent DB access", () => {
   });
 });
 
-// ── WAL checkpoint on close (#244) ──
+// ── closeDB behavior on close (#244; checkpoint removal per #992/#905/#1056) ──
 
-describe("closeDB — WAL checkpoint", () => {
-  test("closeDB checkpoints WAL so no -wal file remains", () => {
+describe("closeDB — close behavior", () => {
+  test("closeDB closes cleanly without destructive close-time checkpoint", () => {
     const dbPath = join(tmpdir(), `wal-test-${Date.now()}.db`);
     const Database = loadDatabase();
     const db = Database(dbPath, { timeout: 30000 });
@@ -1712,15 +1712,17 @@ describe("closeDB — WAL checkpoint", () => {
     // WAL file should exist after writes in WAL mode
     expect(existsSync(dbPath + "-wal")).toBe(true);
 
-    closeDB(db);
-
-    // After closeDB, WAL should be checkpointed (truncated to 0 or removed)
-    // The file may still exist but should be empty, or may not exist
-    const walExists = existsSync(dbPath + "-wal");
-    if (walExists) {
-      const walSize = readFileSync(dbPath + "-wal").length;
-      expect(walSize).toBe(0);
-    }
+    // closeDB must not mutate shared DB files at close time (no
+    // wal_checkpoint(TRUNCATE) — cross-process mutation, #992/#905/#1056).
+    // WAL file state after close is driver-dependent: some drivers
+    // checkpoint/delete it in their own close, others leave it as-is.
+    expect(() => closeDB(db)).not.toThrow();
+    // Data written before close must be durable regardless of WAL state.
+    const Database2 = loadDatabase();
+    const db2 = Database2(dbPath, { timeout: 30000 });
+    const row = db2.prepare("SELECT val FROM t WHERE id = 1").get();
+    expect(row?.val).toBe("hello");
+    db2.close();
 
     // cleanup
     for (const s of ["", "-wal", "-shm"]) {

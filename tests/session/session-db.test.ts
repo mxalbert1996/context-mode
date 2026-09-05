@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { SessionDB } from "../../src/session/db.js";
 import {
   cleanOrphanedWALFiles,
@@ -11,6 +11,7 @@ import {
   deleteDBFiles,
   isSQLiteCorruptionError,
   renameCorruptDB,
+  resetDbErrorLogForTests,
   withRetry,
 } from "../../src/db-base.js";
 
@@ -1432,5 +1433,114 @@ describe("session-resume category", () => {
     expect(events).toHaveLength(1);
     expect(events[0].data).toContain("resume");
     expect(events[0].data).toContain("10");
+  });
+});
+
+// ════════════════════════════════════════════
+// [context-mode:db] silent-failure logging (Lane B disk-I/O hardening)
+// ════════════════════════════════════════════
+//
+// Read paths that return []/"" on error now log to stderr via logDbError
+// with the stable `[context-mode:db]` prefix, deduped per op+code+message
+// within ~30s. Return semantics are unchanged — these tests pin BOTH the
+// logging and the unchanged fallback behavior.
+
+describe("[context-mode:db] read-path failure logging", () => {
+  /** Fresh console.error spy + clean dedupe table for each test. */
+  function spyConsoleError() {
+    resetDbErrorLogForTests();
+    return vi.spyOn(console, "error").mockImplementation(() => {});
+  }
+
+  test("searchEvents failure returns [] AND logs exactly once (rate-limited)", () => {
+    const errSpy = spyConsoleError();
+    try {
+      const db = createTestDB();
+      // Force a genuine read failure. Dropping the table makes BOTH the
+      // cached prepared statement (searchEvents) and fresh prepares throw
+      // "no such table" on every driver — a closed DB alone is not enough
+      // because bun:sqlite silently returns [] for cached statements on
+      // closed handles.
+      (db as unknown as { db: { exec(sql: string): void } }).db.exec("DROP TABLE session_events");
+
+      const first = db.searchEvents("anything", 100, "/any-project");
+      const second = db.searchEvents("anything", 100, "/any-project");
+      assert.deepEqual(first, []);
+      assert.deepEqual(second, []);
+
+      const dbLogs = errSpy.mock.calls.filter((c) => String(c[0]).includes("[context-mode:db]"));
+      assert.equal(dbLogs.length, 1, `expected exactly one rate-limited log, got ${dbLogs.length}`);
+      const line = String(dbLogs[0][0]);
+      assert.ok(line.startsWith("[context-mode:db]"), `bad prefix: ${line}`);
+      assert.ok(line.includes("SessionDB.searchEvents"), `missing op name: ${line}`);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  test("getSessionIdsForProject failure returns [] AND logs its op name", () => {
+    const errSpy = spyConsoleError();
+    try {
+      const db = createTestDB();
+      (db as unknown as { db: { exec(sql: string): void } }).db.exec("DROP TABLE session_events");
+
+      assert.deepEqual(db.getSessionIdsForProject("/any-project"), []);
+
+      const dbLogs = errSpy.mock.calls.filter((c) => String(c[0]).includes("[context-mode:db]"));
+      assert.equal(dbLogs.length, 1);
+      assert.ok(String(dbLogs[0][0]).includes("SessionDB.getSessionIdsForProject"));
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  test("_getSessionProjectDir failure returns '' AND logs its op name", () => {
+    const errSpy = spyConsoleError();
+    try {
+      const db = createTestDB();
+      (db as unknown as { db: { exec(sql: string): void } }).db.exec("DROP TABLE session_meta");
+
+      assert.equal(db._getSessionProjectDir("no-session"), "");
+
+      const dbLogs = errSpy.mock.calls.filter((c) => String(c[0]).includes("[context-mode:db]"));
+      assert.equal(dbLogs.length, 1);
+      assert.ok(String(dbLogs[0][0]).includes("SessionDB.getSessionProjectDir"));
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  test("smoke: SessionDB still opens/inserts/searches after pragma changes with no [context-mode:db] noise", () => {
+    const errSpy = spyConsoleError();
+    try {
+      const db = createTestDB();
+      const sid = `smoke-pragma-${randomUUID()}`;
+
+      db.ensureSession(sid, "/smoke/project");
+      db.insertEvent(
+        sid,
+        makeEvent({ data: "smoke-searchable-data.ts", category: "file" }),
+        "PostToolUse",
+        { projectDir: "/smoke/project", source: "test", confidence: 1 },
+      );
+
+      const events = db.getEvents(sid);
+      assert.equal(events.length, 1);
+      assert.equal(events[0].data, "smoke-searchable-data.ts");
+
+      const results = db.searchEvents("smoke-searchable", 10, "/smoke/project");
+      assert.equal(results.length, 1);
+      assert.equal(results[0].data, "smoke-searchable-data.ts");
+
+      // No initSchema migration catch, WAL pragma failure, or search
+      // failure may fire on a healthy DB — the logging change must be
+      // silent in the happy path.
+      const noise = errSpy.mock.calls.filter((c) => String(c[0]).includes("[context-mode:db]"));
+      assert.equal(noise.length, 0, `unexpected DB error logs: ${noise.map((c) => String(c[0])).join(" | ")}`);
+
+      db.close();
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });

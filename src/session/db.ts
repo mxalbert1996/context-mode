@@ -6,7 +6,7 @@
  * the shared package.
  */
 
-import { SQLiteBase, defaultDBPath } from "../db-base.js";
+import { SQLiteBase, defaultDBPath, logDbError } from "../db-base.js";
 import type { PreparedStatement } from "../db-base.js";
 import type { SessionEvent } from "../types.js";
 import type { ProjectAttribution } from "./project-attribution.js";
@@ -774,10 +774,12 @@ export function ensureSessionEventsSchema(
   try {
     db = new DatabaseCtor(dbPath);
     applyMissingSessionEventsColumns(db);
-  } catch {
+  } catch (err) {
     // best-effort — missing table, file lock, corrupt DB, or DatabaseCtor
     // load failure. The aggregator's existing skip-on-error handles the
-    // downstream readonly query.
+    // downstream readonly query. Logged (rate-limited) so transient
+    // SQLITE_IOERR / lock storms are diagnosable instead of invisible.
+    logDbError("ensureSessionEventsSchema", err, dbPath);
   } finally {
     try { db?.close(); } catch { /* ignore */ }
   }
@@ -815,14 +817,20 @@ export class SessionDB extends SQLiteBase {
     // ── Migration: fix data_hash generated column from older schema ──
     // Old schema had data_hash as GENERATED ALWAYS AS — new schema uses explicit INSERT.
     // Detect and recreate table if needed (session data is ephemeral, safe to drop).
+    // `?? []` — bun:sqlite's adapter returns undefined for a missing table's
+    // table_xinfo; without the fallback this catch fired a TypeError on
+    // EVERY fresh DB, which would make the logging below log-storm on
+    // healthy opens. With it, the catch only fires on real DB failures.
     try {
-      const colInfo = this.db.pragma("table_xinfo(session_events)") as Array<{ name: string; hidden: number }>;
+      const colInfo = (this.db.pragma("table_xinfo(session_events)") ?? []) as Array<{ name: string; hidden: number }>;
       const hashCol = colInfo.find((c) => c.name === "data_hash");
       if (hashCol && hashCol.hidden !== 0) {
         // hidden != 0 means generated column — must recreate
         this.db.exec("DROP TABLE session_events");
       }
-    } catch { /* table doesn't exist yet — fine */ }
+    } catch (err) {
+      logDbError("SessionDB.initSchema.dataHashMigration", err, this.dbPath);
+    }
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS session_events (
@@ -885,8 +893,10 @@ export class SessionDB extends SQLiteBase {
         pragma: (q: string) => Array<{ name: string }>;
         exec: (sql: string) => void;
       });
-    } catch {
-      // best-effort migration only
+    } catch (err) {
+      // best-effort migration only — but surface it (rate-limited) so a
+      // repeatedly failing migration is diagnosable.
+      logDbError("SessionDB.initSchema.migrateColumns", err, this.dbPath);
     }
 
     // Migration: per-session usage high-water cursor for the Stop hook's
@@ -894,12 +904,13 @@ export class SessionDB extends SQLiteBase {
     // uuid of the last assistant turn already emitted so the next Stop forwards
     // only NEW spend. Idempotent — guarded by a table_xinfo column check.
     try {
-      const metaCols = this.db.pragma("table_xinfo(session_meta)") as Array<{ name: string }>;
+      const metaCols = (this.db.pragma("table_xinfo(session_meta)") ?? []) as Array<{ name: string }>;
       if (!metaCols.some((c) => c.name === "usage_cursor")) {
         this.db.exec("ALTER TABLE session_meta ADD COLUMN usage_cursor TEXT");
       }
-    } catch {
-      // best-effort migration only
+    } catch (err) {
+      // best-effort migration only — surface it (rate-limited).
+      logDbError("SessionDB.initSchema.usageCursorMigration", err, this.dbPath);
     }
 
   }
@@ -1370,7 +1381,9 @@ export class SessionDB extends SQLiteBase {
     try {
       const row = this.db.prepare("SELECT project_dir FROM session_meta WHERE session_id = ?").get(sessionId) as { project_dir: string } | undefined;
       return row?.project_dir || "";
-    } catch {
+    } catch (err) {
+      // Best-effort fallback: still return "" but surface why (rate-limited).
+      logDbError("SessionDB.getSessionProjectDir", err, this.dbPath);
       return "";
     }
   }
@@ -1415,7 +1428,10 @@ export class SessionDB extends SQLiteBase {
         data: string;
         created_at: string;
       }>;
-    } catch {
+    } catch (err) {
+      // Best-effort: still return [] but surface why (rate-limited to
+      // once per op+code+message per ~30s).
+      logDbError("SessionDB.searchEvents", err, this.dbPath);
       return [];
     }
   }
@@ -1451,12 +1467,14 @@ export class SessionDB extends SQLiteBase {
       const rows = this.db
         .prepare(
           `SELECT DISTINCT session_id
-             FROM session_events
-            WHERE RTRIM(REPLACE(project_dir, '\\', '/'), '/') = ?`,
+              FROM session_events
+             WHERE RTRIM(REPLACE(project_dir, '\\', '/'), '/') = ?`,
         )
         .all(normalized) as Array<{ session_id: string }>;
       return rows.map((r) => r.session_id);
-    } catch {
+    } catch (err) {
+      // Best-effort: still return [] but surface why (rate-limited).
+      logDbError("SessionDB.getSessionIdsForProject", err, this.dbPath);
       return [];
     }
   }
@@ -1619,7 +1637,8 @@ export class SessionDB extends SQLiteBase {
         "SELECT session_id FROM session_meta ORDER BY started_at DESC LIMIT 1",
       ).get() as { session_id?: string } | undefined;
       return row?.session_id ?? null;
-    } catch {
+    } catch (err) {
+      logDbError("SessionDB.getLatestSessionId", err, this.dbPath);
       return null;
     }
   }
@@ -1637,8 +1656,10 @@ export class SessionDB extends SQLiteBase {
     const safeBytes = Number.isFinite(bytesReturned) && bytesReturned > 0 ? Math.round(bytesReturned) : 0;
     try {
       this.stmt(S.incrementToolCall).run(sessionId, tool, safeBytes);
-    } catch {
-      // best-effort: counter must never throw and break the parent call
+    } catch (err) {
+      // best-effort: counter must never throw and break the parent call —
+      // but surface it (rate-limited) instead of vanishing.
+      logDbError("SessionDB.incrementToolCall", err, this.dbPath);
     }
   }
 
@@ -1670,7 +1691,8 @@ export class SessionDB extends SQLiteBase {
         totalBytesReturned: totals?.bytes_returned ?? 0,
         byTool,
       };
-    } catch {
+    } catch (err) {
+      logDbError("SessionDB.getToolCallStats", err, this.dbPath);
       return { totalCalls: 0, totalBytesReturned: 0, byTool: {} };
     }
   }

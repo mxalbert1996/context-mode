@@ -631,6 +631,29 @@ describe("ContextModePlugin", () => {
       expect(out.system.join("\n")).not.toContain("session_resume");
     });
 
+    it("v1 injected guidance carries the FULL AGENTS.md mandate (condensed block + template, no project copy)", async () => {
+      // User decision: opencode must not require the copied AGENTS.md — the
+      // plugin composes the condensed <context_window_protection> block with
+      // the complete configs/opencode/AGENTS.md mandate (verbatim) at setup.
+      // This project dir has NO AGENTS.md → the append path must fire and
+      // the injected entry must carry BOTH parts, condensed first.
+      const plugin = await createTestPlugin(join(tempDir, "sysxform-agents-mandate"));
+      const out = { system: ["HEADER"] };
+      await plugin["experimental.chat.system.transform"](
+        { sessionID: "v1-agents-mandate", model: {} } as any,
+        out,
+      );
+      expect(out.system[0]).toBe("HEADER"); // header preserved
+      const injected = out.system[1];
+      const condensedIdx = injected.indexOf("<context_window_protection>");
+      const mandateIdx = injected.indexOf("Think in Code — MANDATORY");
+      expect(condensedIdx).toBeGreaterThanOrEqual(0); // condensed block…
+      expect(mandateIdx).toBeGreaterThan(condensedIdx); // …followed by the template
+      // Verbatim template sections (not a condensed paraphrase)
+      expect(injected).toContain("## BLOCKED — do NOT attempt");
+      expect(injected).toContain("## REDIRECTED — use sandbox");
+    });
+
     it("prepends a previously-recorded snapshot to output.system on first call", async () => {
       const projectDir = join(tempDir, "sysxform-inject");
       const plugin = await createTestPlugin(projectDir);

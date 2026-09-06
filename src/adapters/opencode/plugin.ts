@@ -244,6 +244,99 @@ function isSyntheticMessage(text: string): boolean {
   return SYNTHETIC_MESSAGE_PREFIXES.some((p) => trimmed.startsWith(p));
 }
 
+// ── Full AGENTS.md mandate injection (user decision: opencode must not
+//    require the copied AGENTS.md — the injected guidance carries the FULL
+//    mandate, not just the condensed block) ─────────────────
+
+/** Test-only override for the template path (null/undefined → default). */
+let agentsTemplatePathOverride: string | undefined;
+
+/** Test-only: point the template loader at a specific path (tests pass a nonexistent path to simulate a missing template). */
+export function __setAgentsTemplatePathForTests(path: string | undefined): void {
+  agentsTemplatePathOverride = path;
+}
+
+function agentsTemplatePathFor(buildDir: string): string {
+  if (agentsTemplatePathOverride !== undefined) return agentsTemplatePathOverride;
+  // Same buildDir-relative pattern as the routing .mjs islands: the plugin
+  // runs from build/adapters/opencode (or src/adapters/opencode under tsx),
+  // so ../../.. is the package root where configs/ lives.
+  return resolve(buildDir, "..", "..", "..", "configs", "opencode", "AGENTS.md");
+}
+
+/**
+ * Normalize a markdown document for content comparison: strip \r, trim each
+ * line, drop empty lines, re-join with "\n". Absorbs CRLF line endings,
+ * trailing whitespace, and blank-line differences — content-equal documents
+ * normalize identically; ANY edited line does not.
+ */
+function normalizeMarkdownForCompare(content: string): string {
+  return content
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join("\n");
+}
+
+/**
+ * Compose the injected guidance: the condensed routing block FIRST
+ * (<context_window_protection> + quorum markers), then the FULL AGENTS.md
+ * mandate (Think in Code, BLOCKED/REDIRECTED, tool selection, memory
+ * tables, ctx commands) appended VERBATIM — the template uses the SAME
+ * tool naming (`context-mode_ctx_*`) as the runtime redirect guidance, so
+ * no rewrite is needed, and it does NOT contain the condensed block's XML
+ * tag, so there is no tag collision.
+ *
+ * Best-effort: a missing/unreadable template degrades to the condensed
+ * block alone (nothing logged — same degrade-honestly pattern; the
+ * condensed block alone must keep working).
+ *
+ * Dedupe guard (evaluated ONCE at setup) — NORMALIZED FULL-CONTENT
+ * EQUALITY: the template is skipped ONLY when the project-root AGENTS.md is
+ * content-equal to the template after normalization (CRLF/trailing-
+ * whitespace/blank-line differences absorbed). Rationale: the v1 host then
+ * loads the identical mandate natively, so appending it again would
+ * double-inject and waste context. ANY edited copy re-appends the full
+ * template DELIBERATELY — even when the copy still carries the old
+ * signature line — because an edited copy is no longer guaranteed to match
+ * what the plugin injects, and the injected guidance is the authoritative
+ * mandate. Unreadable project files fall through and append (harmless
+ * duplicate worst-case; never break setup over a diagnostics read).
+ */
+function composeRoutingGuidance(
+  condensedBlock: string,
+  templatePath: string,
+  projectDir: string,
+): string {
+  let agentsMdContent = "";
+  try {
+    if (existsSync(templatePath)) {
+      const content = readFileSync(templatePath, "utf-8");
+      if (content.trim()) agentsMdContent = content;
+    }
+  } catch {
+    agentsMdContent = ""; // unreadable template — condensed block alone
+  }
+  if (!agentsMdContent) return condensedBlock;
+
+  try {
+    const projectAgentsPath = join(projectDir, "AGENTS.md");
+    if (existsSync(projectAgentsPath)) {
+      const projectAgents = readFileSync(projectAgentsPath, "utf-8");
+      if (normalizeMarkdownForCompare(projectAgents) === normalizeMarkdownForCompare(agentsMdContent)) {
+        // Content-equal copy → the v1 host loads the identical mandate
+        // natively — skip the template. Edited copies re-append above.
+        return condensedBlock;
+      }
+    }
+  } catch {
+    // Unreadable project file — fall through and append (harmless duplicate
+    // worst-case; never break setup over a diagnostics read).
+  }
+  return `${condensedBlock}\n\n${agentsMdContent}`;
+}
+
 // ── Helpers ───────────────────────────────────────────────
 
 // Quorum markers — must NOT be substrings of each other (#487).
@@ -610,13 +703,21 @@ async function createPluginRuntime(
   // sessionID, so we cache it. createToolNamer accepts both "opencode" and
   // "kilo" per hooks/core/tool-naming.mjs:25-26.
   const toolNamer = (toolNamingMod as unknown as { createToolNamer: (platform: string) => unknown }).createToolNamer(platform);
-  const routingBlock: string = (routingBlockMod as unknown as { createRoutingBlock: (namer: unknown) => string }).createRoutingBlock(toolNamer);
+  const condensedRoutingBlock: string = (routingBlockMod as unknown as { createRoutingBlock: (namer: unknown) => string }).createRoutingBlock(toolNamer);
 
   // Initialize per-process state. We do NOT fabricate a sessionId here —
   // OpenCode/Kilo provide the real `input.sessionID` on every hook, and a
   // process-global UUID would (a) never match prior-session resume rows and
   // (b) collide across multi-session reuse (Mickey / PR #376 root cause).
   const projectDir = projectDirOverride ?? ctx?.directory ?? process.cwd();
+  // Compose the FULL injected guidance (condensed block first + the complete
+  // AGENTS.md mandate verbatim, subject to the project-root dedupe guard) —
+  // evaluated ONCE per process; needs the resolved project dir.
+  const routingBlock: string = composeRoutingGuidance(
+    condensedRoutingBlock,
+    agentsTemplatePathFor(buildDir),
+    projectDir,
+  );
   // C2 narrowing: resolve DB path through the canonical helper directly.
   // BaseAdapter no longer exposes getSessionDBPath; the adapter only owns
   // the sessions DIR (per-platform), the helper owns the per-project FILE

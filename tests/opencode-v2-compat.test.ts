@@ -32,7 +32,11 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { __resetPluginLogSinkForTests, __resetPluginStateForTests } from "../src/adapters/opencode/plugin.js";
+import {
+  __resetPluginLogSinkForTests,
+  __resetPluginStateForTests,
+  __setAgentsTemplatePathForTests,
+} from "../src/adapters/opencode/plugin.js";
 
 // ── SessionDB constructor spy (mock module-wide, delegate to real class) ──
 
@@ -157,15 +161,15 @@ function makeV2Ctx(
         };
       };
     }
-    if (!opts.omitToolHook) {
-      ctx.tool.hook = opts.hookImpl
-        ? opts.hookImpl
-        : async (name: string, cb: (event: unknown) => unknown) => {
-            toolHooks.set(name, cb);
-            return () => {
-              toolHooks.delete(name);
-            };
-          };
+    if (!opts.hookImpl) {
+      ctx.tool.hook = async (name: string, cb: (event: unknown) => unknown) => {
+        toolHooks.set(name, cb);
+        return () => {
+          toolHooks.delete(name);
+        };
+      };
+    } else {
+      ctx.tool.hook = opts.hookImpl;
     }
   }
   if (opts.withSession) {
@@ -1050,6 +1054,169 @@ describe("opencode v2 compatibility", () => {
       } finally {
         process.chdir(prevCwd);
       }
+    });
+  });
+
+  // ── Full AGENTS.md mandate injection (user decision: no copied
+  //    AGENTS.md required — the plugin injects the FULL mandate) ──
+
+  describe("full AGENTS.md mandate injection", () => {
+    afterEach(() => {
+      __setAgentsTemplatePathForTests(undefined);
+    });
+
+    async function setupWithSessionContext(
+      projectDir: string,
+      projectAgentsMd?: string,
+    ) {
+      if (projectAgentsMd !== undefined) {
+        mkdirSync(projectDir, { recursive: true });
+        writeFileSync(join(projectDir, "AGENTS.md"), projectAgentsMd);
+      }
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const host = makeV2Ctx(projectDir, { withSession: true });
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => Promise<void>;
+      return { host, cleanup, contextHook: host.sessionHooks.get("context") as any };
+    }
+
+    const invokeContext = async (contextHook: any, sessionID: string) => {
+      const event = { sessionID, model: {}, system: [{ text: "HEADER" }] };
+      await contextHook(event);
+      return (event.system as Array<{ text: string }>).map((p) => p.text).join("\n");
+    };
+
+    it("(a) no project AGENTS.md → condensed block FIRST + full mandate appended", async () => {
+      const { cleanup, contextHook } = await setupWithSessionContext(join(tempDir, "agents-inject-full"));
+      const texts = await invokeContext(contextHook, "agents-full");
+
+      const condensedIdx = texts.indexOf("<context_window_protection>");
+      const mandateIdx = texts.indexOf("Think in Code — MANDATORY");
+      expect(condensedIdx).toBeGreaterThanOrEqual(0); // condensed block present…
+      expect(mandateIdx).toBeGreaterThan(condensedIdx); // …appended AFTER it
+      // Verbatim template sections carried by the injected guidance
+      expect(texts).toContain("## BLOCKED — do NOT attempt");
+      expect(texts).toContain("## REDIRECTED — use sandbox");
+      (cleanup as () => void)?.();
+    });
+
+    it("(b1) project AGENTS.md = normalized copy of the template → condensed only (host loads it natively)", async () => {
+      // Dedupe guard = NORMALIZED FULL-CONTENT EQUALITY: a byte-exact copy
+      // of the shipped template is loaded natively by the v1 host, so the
+      // plugin skips its own injection (no double mandate).
+      const template = readFileSync(
+        resolve(process.cwd(), "configs", "opencode", "AGENTS.md"),
+        "utf-8",
+      );
+      const { cleanup, contextHook } = await setupWithSessionContext(
+        join(tempDir, "agents-inject-copy"),
+        template,
+      );
+      const texts = await invokeContext(contextHook, "agents-copy");
+      expect(texts).toContain("<context_window_protection>");
+      expect(texts).not.toContain("Think in Code — MANDATORY");
+      (cleanup as () => void)?.();
+    });
+
+    it("(b2) project AGENTS.md with the signature line but an EDITED body → template STILL appended", async () => {
+      // Normalized equality is strict: ANY edited copy re-appends the full
+      // template deliberately — even when the old signature line survives —
+      // because an edited copy no longer matches what the plugin injects.
+      const template = readFileSync(
+        resolve(process.cwd(), "configs", "opencode", "AGENTS.md"),
+        "utf-8",
+      );
+      const editedCopy = `${template}\n\n## Project-specific addendum\n- my custom rule\n`;
+      const { cleanup, contextHook } = await setupWithSessionContext(
+        join(tempDir, "agents-inject-edited"),
+        editedCopy,
+      );
+      const texts = await invokeContext(contextHook, "agents-edited");
+      expect(texts).toContain("<context_window_protection>");
+      expect(texts).toContain("Think in Code — MANDATORY");
+      (cleanup as () => void)?.();
+    });
+
+    it("(b4) byte-identical copy with CRLF + trailing-whitespace differences → still skipped (normalized)", async () => {
+      // Normalization strips \r, trims lines and drops empty lines — CRLF
+      // line endings, trailing spaces and blank-line churn still normalize
+      // equal to the template, so the dedupe guard skips the append.
+      const template = readFileSync(
+        resolve(process.cwd(), "configs", "opencode", "AGENTS.md"),
+        "utf-8",
+      );
+      const crlfCopy =
+        template
+          .replace(/\r?\n/g, "\r\n")
+          .split("\r\n")
+          .map((line) => `${line}   `) // trailing whitespace on every line
+          .join("\r\n") + "\r\n\r\n\r\n"; // trailing blank lines at EOF
+      const { cleanup, contextHook } = await setupWithSessionContext(
+        join(tempDir, "agents-inject-crlf"),
+        crlfCopy,
+      );
+      const texts = await invokeContext(contextHook, "agents-crlf");
+      expect(texts).toContain("<context_window_protection>");
+      expect(texts).not.toContain("Think in Code — MANDATORY");
+      (cleanup as () => void)?.();
+    });
+
+    it("(b3) UNRELATED project AGENTS.md (no signature) → template STILL appended", async () => {
+      const { cleanup, contextHook } = await setupWithSessionContext(
+        join(tempDir, "agents-inject-unrelated"),
+        "# My project rules\n- keep tests fast\n",
+      );
+      const texts = await invokeContext(contextHook, "agents-unrelated");
+      expect(texts).toContain("<context_window_protection>");
+      expect(texts).toContain("Think in Code — MANDATORY");
+      (cleanup as () => void)?.();
+    });
+
+    it("(c) template missing → condensed-only, no throw", async () => {
+      __setAgentsTemplatePathForTests(join(tempDir, "no-such-AGENTS.md"));
+      const { cleanup, contextHook } = await setupWithSessionContext(join(tempDir, "agents-inject-missing"));
+      const texts = await invokeContext(contextHook, "agents-missing");
+      expect(texts).toContain("<context_window_protection>");
+      expect(texts).not.toContain("Think in Code — MANDATORY");
+      (cleanup as () => void)?.();
+    });
+
+    it("(a3) whitespace-only template → condensed-only (treated as empty)", async () => {
+      // composeRoutingGuidance drops a template whose content trims empty —
+      // the condensed block alone must keep working (degrade-honestly).
+      const wsTemplate = join(tempDir, "agents-template-whitespace.md");
+      writeFileSync(wsTemplate, "   \n\n\t\n  \n");
+      __setAgentsTemplatePathForTests(wsTemplate);
+      const { cleanup, contextHook } = await setupWithSessionContext(join(tempDir, "agents-inject-ws"));
+      const texts = await invokeContext(contextHook, "agents-ws");
+      expect(texts).toContain("<context_window_protection>");
+      expect(texts).not.toContain("Think in Code — MANDATORY");
+      (cleanup as () => void)?.();
+    });
+
+    it("(a4) unreadable template (EISDIR via a directory) → condensed-only, no throw", async () => {
+      // existsSync(dir) is true but readFileSync(dir) throws EISDIR — the
+      // best-effort read must swallow it and degrade to the condensed block.
+      const dirTemplate = join(tempDir, "agents-template-dir");
+      mkdirSync(dirTemplate, { recursive: true });
+      __setAgentsTemplatePathForTests(dirTemplate);
+      const { cleanup, contextHook } = await setupWithSessionContext(join(tempDir, "agents-inject-dir"));
+      const texts = await invokeContext(contextHook, "agents-dir");
+      expect(texts).toContain("<context_window_protection>");
+      expect(texts).not.toContain("Think in Code — MANDATORY");
+      (cleanup as () => void)?.();
+    });
+
+    it("(a5) unreadable project AGENTS.md (EISDIR) does NOT block the template append", async () => {
+      // The dedupe guard reads <projectDir>/AGENTS.md; when that read fails
+      // (here: the path is a directory → EISDIR), the guard falls through
+      // and the template IS appended (harmless duplicate worst-case).
+      const projectDir = join(tempDir, "agents-inject-unreadable");
+      mkdirSync(join(projectDir, "AGENTS.md"), { recursive: true });
+      const { cleanup, contextHook } = await setupWithSessionContext(projectDir);
+      const texts = await invokeContext(contextHook, "agents-unreadable");
+      expect(texts).toContain("<context_window_protection>");
+      expect(texts).toContain("Think in Code — MANDATORY");
+      (cleanup as () => void)?.();
     });
   });
 

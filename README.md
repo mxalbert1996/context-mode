@@ -483,13 +483,7 @@ Full configs: [`configs/cursor/hooks.json`](configs/cursor/hooks.json) | [`confi
 
    The `plugin` entry registers all 11 `ctx_*` tools natively and enables hooks — OpenCode calls context-mode's TypeScript plugin in-process, so there is no redundant stdio MCP child per session.
 
-2. *(Optional)* Copy the routing rules file:
-
-   ```bash
-   cp node_modules/context-mode/configs/opencode/AGENTS.md AGENTS.md
-   ```
-
-   The plugin already injects its routing guidance (which tools to use, which commands are blocked and why) into the system prompt on every model dispatch — on both opencode v1 and v2. The copy is only useful if you want the same guidance also visible as native project rules (`AGENTS.md`) for sessions without the plugin. Your own `AGENTS.md`/`CLAUDE.md`/`CONTEXT.md` rules are captured automatically for session continuity — no copy needed.
+2. **No AGENTS.md copy needed.** The plugin injects the FULL routing mandate — Think in Code, BLOCKED/REDIRECTED commands, tool selection, memory tables (the complete [`configs/opencode/AGENTS.md`](configs/opencode/AGENTS.md) content, verbatim) — into the system prompt on every model dispatch. An existing copy stays harmless: OpenCode loads a project `AGENTS.md` natively as active project rules, and the plugin auto-skips its own injection when the project file's content matches the shipped template (normalized full-content comparison — an edited copy keeps getting re-injected, deliberately, so your edits don't get shadowed by the stale shipped version).
 
 3. Restart OpenCode.
 
@@ -497,7 +491,7 @@ Full configs: [`configs/cursor/hooks.json`](configs/cursor/hooks.json) | [`confi
 
 **Upgrade note:** If an existing config has BOTH `plugin: ["context-mode"]` AND `mcp.context-mode`, OpenCode will register zero `ctx_*` tools — the plugin path correctly suppresses MCP duplicates, but the legacy MCP entry confuses the loader. Run `context-mode upgrade` to remove the legacy `mcp.context-mode` entry; your other MCP servers are preserved. v1.0.140+ emits a stderr diagnostic with the same guidance when this happens.
 
-**Routing:** Hooks enforce routing programmatically via `tool.execute.before` and `tool.execute.after`. The optional [`AGENTS.md`](configs/opencode/AGENTS.md) file provides routing instructions for model awareness. The `experimental.session.compacting` hook builds resume snapshots when the conversation compacts. The `experimental.chat.system.transform` hook injects the routing block and prior-session snapshots at session start, enabling session continuity across restarts. The `chat.message` hook captures user prompts and decisions (UserPromptSubmit equivalent).
+**Routing:** Hooks enforce routing programmatically via `tool.execute.before` and `tool.execute.after`, and the plugin injects the full routing guidance (condensed block + complete AGENTS.md mandate) into the system prompt on every model dispatch — no copied AGENTS.md is required. The `experimental.session.compacting` hook builds resume snapshots when the conversation compacts. The `experimental.chat.system.transform` hook injects the routing block and prior-session snapshots at session start, enabling session continuity across restarts. The `chat.message` hook captures user prompts and decisions (UserPromptSubmit equivalent).
 
 > **Note:** OpenCode lacks a real SessionStart hook ([#14808](https://github.com/sst/opencode/issues/14808), [#5409](https://github.com/sst/opencode/issues/5409)). The plugin uses `experimental.chat.system.transform` as a surrogate — it injects both the routing block and resume snapshots into the system prompt. User-prompt capture uses `chat.message` instead of the missing UserPromptSubmit hook. AGENTS.md/CLAUDE.md/CONTEXT.md rules are captured automatically on first hook fire per project.
 
@@ -523,11 +517,7 @@ Full configs: [`configs/opencode/opencode.json`](configs/opencode/opencode.json)
 
    The `plugin` entry registers all 11 `ctx_*` tools natively and enables hooks — KiloCode calls context-mode's TypeScript plugin in-process, so there is no redundant stdio MCP child per session.
 
-2. *(Optional)* Copy the routing rules file. KiloCode shares the OpenCode plugin architecture; the plugin already injects its routing guidance into the system prompt on every model dispatch, so the copy is only useful if you want the guidance also visible as native project rules:
-
-   ```bash
-   cp node_modules/context-mode/configs/opencode/AGENTS.md AGENTS.md
-   ```
+2. **No AGENTS.md copy needed.** KiloCode shares the OpenCode plugin architecture — the plugin injects the FULL routing mandate ([`configs/opencode/AGENTS.md`](configs/opencode/AGENTS.md), verbatim) into the system prompt on every model dispatch. An existing copy is harmless (the host loads it natively as project rules) and identical copies are auto-skipped by the plugin's dedupe guard, so the mandate is never injected twice.
 
 3. Restart KiloCode.
 
@@ -535,7 +525,7 @@ Full configs: [`configs/opencode/opencode.json`](configs/opencode/opencode.json)
 
 **Upgrade note:** If an existing config has BOTH `plugin: ["context-mode"]` AND `mcp.context-mode`, KiloCode will register zero `ctx_*` tools — the plugin path correctly suppresses MCP duplicates, but the legacy MCP entry confuses the loader. Run `context-mode upgrade` to remove the legacy `mcp.context-mode` entry; your other MCP servers are preserved. v1.0.140+ emits a stderr diagnostic with the same guidance when this happens.
 
-**Routing:** Hooks enforce routing programmatically via `tool.execute.before` and `tool.execute.after`. The optional [`AGENTS.md`](configs/opencode/AGENTS.md) file provides routing instructions for model awareness. The `experimental.session.compacting` hook builds resume snapshots when the conversation compacts. The `experimental.chat.system.transform` hook injects the routing block and prior-session snapshots at session start, enabling session continuity across restarts. The `chat.message` hook captures user prompts and decisions (UserPromptSubmit equivalent).
+**Routing:** Hooks enforce routing programmatically via `tool.execute.before` and `tool.execute.after`, and the plugin injects the full routing guidance (condensed block + complete AGENTS.md mandate) into the system prompt on every model dispatch — no copied AGENTS.md is required. The `experimental.session.compacting` hook builds resume snapshots when the conversation compacts. The `experimental.chat.system.transform` hook injects the routing block and prior-session snapshots at session start, enabling session continuity across restarts. The `chat.message` hook captures user prompts and decisions (UserPromptSubmit equivalent).
 
 > **Note:** KiloCode shares the same plugin architecture as OpenCode, using the OpenCodeAdapter with platform-specific configuration paths (`kilo.json` instead of `opencode.json`, `~/.config/kilo/` instead of `~/.config/opencode/`). Like OpenCode, it lacks a real SessionStart hook — the plugin uses `experimental.chat.system.transform` as a surrogate. User-prompt capture uses `chat.message` instead of the missing UserPromptSubmit hook. AGENTS.md/CLAUDE.md/CONTEXT.md rules are captured automatically on first hook fire per project.
 

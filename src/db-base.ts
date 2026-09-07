@@ -523,6 +523,14 @@ export function withRetry<T>(fn: () => T, delays: number[] = [100, 500, 2000]): 
         throw err;
       }
       lastError = err instanceof Error ? err : new Error(errorSignature(err));
+      if (!(err instanceof Error)) {
+        // Preserve the SQLite code (e.g. SQLITE_IOERR) on the normalized
+        // Error — non-Error throw shapes ({ code } objects, strings) would
+        // otherwise lose it, leaving callers unable to classify the failure
+        // after retries are exhausted.
+        const code = extractErrorCode(err);
+        if (code) (lastError as NodeJS.ErrnoException).code = code;
+      }
       if (attempt < delays.length) {
         const delay = delays[attempt];
         const start = Date.now();
@@ -530,10 +538,17 @@ export function withRetry<T>(fn: () => T, delays: number[] = [100, 500, 2000]): 
       }
     }
   }
-  throw new Error(
+  const exhausted = new Error(
     `SQLITE_BUSY/SQLITE_IOERR: transient SQLite error after ${delays.length} retries. ` +
     `Original error: ${lastError?.message}`
   );
+  // Carry the last error's SQLite code on the wrapper (message alone is
+  // ambiguous — it names both SQLITE_BUSY and SQLITE_IOERR). store.ts's
+  // `[context-mode:store]` enrichment appends this as ` (<code>)` so the
+  // tool-visible error is never a bare "disk I/O error".
+  const exhaustedCode = lastError ? extractErrorCode(lastError) : "";
+  if (exhaustedCode) (exhausted as NodeJS.ErrnoException).code = exhaustedCode;
+  throw exhausted;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -590,8 +605,12 @@ const _recentDbErrors = new Map<string, number>();
  * Extract the SQLite error code (e.g. "SQLITE_IOERR") from an arbitrary
  * thrown value, or "" when absent. better-sqlite3 and node:sqlite set
  * `code` on SqliteError; bun:sqlite encodes it in the message instead.
+ *
+ * Exported so store.ts can append the same `[<code>]` context to the
+ * tool-visible `[context-mode:store] …` error messages without
+ * duplicating the throw-shape handling.
  */
-function extractErrorCode(err: unknown): string {
+export function extractErrorCode(err: unknown): string {
   if (err instanceof Error) {
     const code = (err as NodeJS.ErrnoException).code;
     return typeof code === "string" ? code : "";
@@ -603,7 +622,12 @@ function extractErrorCode(err: unknown): string {
   return "";
 }
 
-function errorMessage(err: unknown): string {
+/**
+ * Normalize the human-readable message of an arbitrary thrown value.
+ * Exported alongside extractErrorCode for store.ts's tool-error
+ * enrichment (non-Error shapes included).
+ */
+export function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
   if (err !== null && typeof err === "object") {

@@ -9,7 +9,7 @@
  */
 
 import type { Database as DatabaseInstance } from "better-sqlite3";
-import { loadDatabase, applyWALPragmas, closeDB, cleanOrphanedWALFiles, withRetry, deleteDBFiles, isSQLiteCorruptionError } from "./db-base.js";
+import { loadDatabase, applyWALPragmas, closeDB, cleanOrphanedWALFiles, withRetry, deleteDBFiles, isSQLiteCorruptionError, logDbError, extractErrorCode, errorMessage } from "./db-base.js";
 import type { PreparedStatement } from "./db-base.js";
 import { readFileSync, readdirSync, unlinkSync, existsSync, statSync, openSync, fstatSync, closeSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -348,6 +348,41 @@ function findMinSpan(positionLists: number[][]): number {
   return minSpan;
 }
 
+// ─────────────────────────────────────────────────────────
+// Store error handling (v2.0.2 — disk-I/O hardening parity with db-base)
+// ─────────────────────────────────────────────────────────
+
+/**
+ * Prefix for tool-visible ContentStore failures. Store failures used to
+ * surface as the raw driver message — for SQLITE_IOERR exactly
+ * "disk I/O error", with no op, no DB path, no SQLite code, and nothing
+ * in any log (the store layer's catches were all silent). Every store
+ * open/write failure now (a) logs to stderr via db-base's logDbError
+ * (same `[context-mode:db]` prefix, 30s dedupe, 256-key cap) and
+ * (b) rethrows with this prefix plus op, path, and code so the isError
+ * text the MCP client sees is actionable.
+ */
+const STORE_ERROR_PREFIX = "[context-mode:store]";
+
+/**
+ * Log `err` for store operation `op` and return an Error whose message
+ * carries the op, the DB file path, and the SQLite code (when present):
+ * `[context-mode:store] <op> failed on <dbPath>: <message> (<code>)`.
+ * `base` replaces `<message>` for callers that must preserve an existing
+ * wrap message (the corruption delete-and-recreate retry). Callers throw
+ * the result. Logging goes through db-base's logDbError (stderr), never
+ * console.log, and logging itself never throws.
+ */
+function storeFailure(op: string, err: unknown, dbPath: string, base?: string): Error {
+  logDbError(op, err, dbPath);
+  const message = errorMessage(err);
+  const code = extractErrorCode(err);
+  const codeSuffix = code ? ` (${code})` : "";
+  return new Error(
+    `${STORE_ERROR_PREFIX} ${op} failed on ${dbPath}: ${base ?? message}${codeSuffix}`,
+  );
+}
+
 export class ContentStore {
   #db: DatabaseInstance;
   #dbPath: string;
@@ -422,30 +457,58 @@ export class ContentStore {
     this.#dbPath =
       dbPath ?? join(tmpdir(), `context-mode-${process.pid}.db`);
     cleanOrphanedWALFiles(this.#dbPath);
+
+    // One open attempt: create the connection and apply WAL pragmas.
+    // Wrapped in withRetry below so a transient SQLITE_IOERR / "disk I/O
+    // error" on open is retried with the same exponential backoff as
+    // SQLITE_BUSY (db-base, v1.0.187 hardening). Corruption signatures are
+    // never retried by withRetry — they rethrow for the recovery path.
+    const openOnce = (): DatabaseInstance => {
+      const db = new Database(this.#dbPath, { timeout: 30000 });
+      applyWALPragmas(db);
+      return db;
+    };
+
     let db: DatabaseInstance;
     try {
-      db = new Database(this.#dbPath, { timeout: 30000 });
-      applyWALPragmas(db);
+      db = withRetry(openOnce);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (isSQLiteCorruptionError(msg)) {
+        // Surface the corruption + delete-and-recreate instead of silently
+        // swapping the file — users lose indexed content and deserve a trace.
+        logDbError("store.open", err, this.#dbPath);
         deleteDBFiles(this.#dbPath);
         cleanOrphanedWALFiles(this.#dbPath);
         try {
-          db = new Database(this.#dbPath, { timeout: 30000 });
-          applyWALPragmas(db);
+          db = withRetry(openOnce);
         } catch (retryErr) {
-          throw new Error(
-            `Failed to create fresh DB after deleting corrupt file: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`
+          // Preserve the existing corruption-retry wrap message, enriched
+          // with op + path + code so the tool error is never bare.
+          throw storeFailure(
+            "store.open",
+            retryErr,
+            this.#dbPath,
+            `Failed to create fresh DB after deleting corrupt file: ${errorMessage(retryErr)}`,
           );
         }
       } else {
-        throw err;
+        // Transient-retry exhaustion or a non-transient open failure —
+        // either way the caller gets op + path + code, and stderr gets a
+        // [context-mode:db] line (deduped).
+        throw storeFailure("store.open", err, this.#dbPath);
       }
     }
     this.#db = db;
-    this.#initSchema();
-    this.#prepareStatements();
+    try {
+      this.#initSchema();
+      this.#prepareStatements();
+    } catch (err) {
+      // The connection is already open here, so there is no retry contract
+      // for schema init — but the failure must not be silent: log the
+      // [context-mode:db] line and rethrow with op + path + code context.
+      throw storeFailure("store.initSchema", err, this.#dbPath);
+    }
   }
 
   /** Delete this session's DB files. Call on process exit. */
@@ -889,7 +952,15 @@ export class ContentStore {
     const filePath = path ?? undefined;
     const contentHash = filePath ? createHash("sha256").update(text).digest("hex") : undefined;
 
-    return withRetry(() => this.#insertChunks(chunks, label, text, filePath, contentHash, attribution));
+    // withRetry absorbs transient SQLITE_BUSY/SQLITE_IOERR with exponential
+    // backoff; on exhaustion the failure is logged ([context-mode:db]) and
+    // rethrown with op + path + code so the tool error is never a bare
+    // "disk I/O error".
+    try {
+      return withRetry(() => this.#insertChunks(chunks, label, text, filePath, contentHash, attribution));
+    } catch (err) {
+      throw storeFailure("store.index", err, this.#dbPath);
+    }
   }
 
   // ── Index Directory (#687) ──
@@ -976,14 +1047,18 @@ export class ContentStore {
 
     const chunks = this.#chunkPlainText(content, linesPerChunk, maxChunkBytes);
 
-    return withRetry(() => this.#insertChunks(
-      chunks.map((c) => ({ ...c, hasCode: false })),
-      source,
-      content,
-      undefined,
-      undefined,
-      attribution,
-    ));
+    try {
+      return withRetry(() => this.#insertChunks(
+        chunks.map((c) => ({ ...c, hasCode: false })),
+        source,
+        content,
+        undefined,
+        undefined,
+        attribution,
+      ));
+    } catch (err) {
+      throw storeFailure("store.indexPlainText", err, this.#dbPath);
+    }
   }
 
   // ── Index JSON ──
@@ -1019,7 +1094,11 @@ export class ContentStore {
       return this.indexPlainText(content, source, undefined, attribution, maxChunkBytes);
     }
 
-    return withRetry(() => this.#insertChunks(chunks, source, content, undefined, undefined, attribution));
+    try {
+      return withRetry(() => this.#insertChunks(chunks, source, content, undefined, undefined, attribution));
+    } catch (err) {
+      throw storeFailure("store.indexJSON", err, this.#dbPath);
+    }
   }
 
   // ── Shared DB Insertion ──
@@ -1150,7 +1229,11 @@ export class ContentStore {
       params = [sanitized, limit];
     }
 
-    return withRetry(() => this.#mapSearchRows(stmt.all(...params) as SearchRow[]));
+    try {
+      return withRetry(() => this.#mapSearchRows(stmt.all(...params) as SearchRow[]));
+    } catch (err) {
+      throw storeFailure("store.search", err, this.#dbPath);
+    }
   }
 
   // ── Trigram Search (Layer 2) ──
@@ -1187,7 +1270,11 @@ export class ContentStore {
       params = [sanitized, limit];
     }
 
-    return withRetry(() => this.#mapSearchRows(stmt.all(...params) as SearchRow[]));
+    try {
+      return withRetry(() => this.#mapSearchRows(stmt.all(...params) as SearchRow[]));
+    } catch (err) {
+      throw storeFailure("store.searchTrigram", err, this.#dbPath);
+    }
   }
 
   // ── Fuzzy Correction (Layer 3) ──
@@ -1414,9 +1501,17 @@ export class ContentStore {
    */
   #refreshStaleSources(): void {
     this.lastRefreshCount = 0;
-    const sources = this.#db.prepare(
-      "SELECT label, file_path, content_hash, indexed_at FROM sources WHERE file_path IS NOT NULL",
-    ).all() as Array<{ label: string; file_path: string; content_hash: string; indexed_at: string }>;
+    let sources: Array<{ label: string; file_path: string; content_hash: string; indexed_at: string }>;
+    try {
+      // Staleness scan is a read, but it runs ahead of every search — a
+      // transient IOERR here gets the same retry, and exhaustion the same
+      // op/path/code context, as the write paths.
+      sources = withRetry(() => this.#db.prepare(
+        "SELECT label, file_path, content_hash, indexed_at FROM sources WHERE file_path IS NOT NULL",
+      ).all()) as Array<{ label: string; file_path: string; content_hash: string; indexed_at: string }>;
+    } catch (err) {
+      throw storeFailure("store.refreshStaleSources", err, this.#dbPath);
+    }
 
     for (const src of sources) {
       try {
@@ -1452,8 +1547,12 @@ export class ContentStore {
         // are exactly the bytes indexed.
         this.index({ content: newContent, path: src.file_path, source: src.label });
         this.lastRefreshCount++;
-      } catch {
-        // Graceful degradation — never break search for stale detection
+      } catch (err) {
+        // Graceful degradation — never break search for stale detection.
+        // But the failure (a failed re-index write, a vanished file) is no
+        // longer silent: one deduped [context-mode:db] line per distinct
+        // error. The re-index itself already logged under store.index.
+        logDbError("store.refreshStaleSources", err, this.#dbPath);
       }
     }
   }
@@ -1591,8 +1690,15 @@ export class ContentStore {
       this.#stmtCleanupChunksTrigram.run(days);
       return this.#stmtCleanupSources.run(days);
     });
-    const info = cleanup(maxAgeDays);
-    return info.changes;
+    // Write path — same transient-IOERR/BUSY retry + failure context as
+    // store.index. better-sqlite3 and the db-base adapters roll the
+    // transaction back on throw, so re-invoking after a retry is safe.
+    try {
+      const info = withRetry(() => cleanup(maxAgeDays));
+      return info.changes;
+    } catch (err) {
+      throw storeFailure("store.cleanupStaleSources", err, this.#dbPath);
+    }
   }
 
   /** Get DB file size in bytes. */
@@ -1609,7 +1715,11 @@ export class ContentStore {
     try {
       this.#db.exec("INSERT INTO chunks(chunks) VALUES('optimize')");
       this.#db.exec("INSERT INTO chunks_trigram(chunks_trigram) VALUES('optimize')");
-    } catch { /* best effort — don't block indexing */ }
+    } catch (err) {
+      // Best effort — don't block indexing, but don't stay silent either:
+      // 'optimize' is a write and its failures were previously invisible.
+      logDbError("store.optimizeFTS", err, this.#dbPath);
+    }
   }
 
   close(): void {

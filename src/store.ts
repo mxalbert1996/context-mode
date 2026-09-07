@@ -365,22 +365,52 @@ function findMinSpan(positionLists: number[][]): number {
 const STORE_ERROR_PREFIX = "[context-mode:store]";
 
 /**
+ * Symbol marking Errors that this layer already reported via logDbError
+ * (every storeFailure product carries it). Symbol.for so the flag survives
+ * module re-imports, mirroring db-base's global-symbol pattern.
+ */
+const kDbErrorLogged = Symbol.for("__context_mode_db_error_logged__");
+
+/** True when `err` was already logged + enriched by an inner store op —
+ *  outer catches must not emit a second line for the same failure. */
+function isDbErrorAlreadyLogged(err: unknown): boolean {
+  try {
+    return (
+      typeof err === "object" &&
+      err !== null &&
+      (err as Record<symbol, unknown>)[kDbErrorLogged] === true
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Log `err` for store operation `op` and return an Error whose message
  * carries the op, the DB file path, and the SQLite code (when present):
  * `[context-mode:store] <op> failed on <dbPath>: <message> (<code>)`.
+ * The returned Error preserves the original `.code` and carries a
+ * non-enumerable kDbErrorLogged marker: when it flows through another
+ * storeFailure call (e.g. a failed stale re-index surfacing through an
+ * outer wrapper) it is returned as-is, so one underlying failure produces
+ * exactly one `[context-mode:db]` line, under the op that owns it.
  * `base` replaces `<message>` for callers that must preserve an existing
  * wrap message (the corruption delete-and-recreate retry). Callers throw
  * the result. Logging goes through db-base's logDbError (stderr), never
  * console.log, and logging itself never throws.
  */
 function storeFailure(op: string, err: unknown, dbPath: string, base?: string): Error {
+  if (isDbErrorAlreadyLogged(err)) return err as Error;
   logDbError(op, err, dbPath);
   const message = errorMessage(err);
   const code = extractErrorCode(err);
   const codeSuffix = code ? ` (${code})` : "";
-  return new Error(
+  const enriched = new Error(
     `${STORE_ERROR_PREFIX} ${op} failed on ${dbPath}: ${base ?? message}${codeSuffix}`,
   );
+  if (code) (enriched as NodeJS.ErrnoException).code = code;
+  Object.defineProperty(enriched, kDbErrorLogged, { value: true, enumerable: false });
+  return enriched;
 }
 
 export class ContentStore {
@@ -1042,7 +1072,16 @@ export class ContentStore {
     maxChunkBytes: number = MAX_CHUNK_BYTES,
   ): IndexResult {
     if (!content || content.trim().length === 0) {
-      return this.#insertChunks([], source, "", undefined, undefined, attribution);
+      // Empty fast path still writes to the DB (a 0-chunk source row for
+      // dedup bookkeeping), so it gets the same retry + failure-context
+      // contract as the regular write path instead of bypassing both.
+      // indexJSON("") and its 0-chunk fallbacks delegate to this method,
+      // which routes them through the same contract.
+      try {
+        return withRetry(() => this.#insertChunks([], source, "", undefined, undefined, attribution));
+      } catch (err) {
+        throw storeFailure("store.indexPlainText", err, this.#dbPath);
+      }
     }
 
     const chunks = this.#chunkPlainText(content, linesPerChunk, maxChunkBytes);
@@ -1293,10 +1332,19 @@ export class ContentStore {
 
     const maxDist = maxEditDistance(word.length);
 
-    const candidates = this.#stmtFuzzyVocab.all(
-      word.length - maxDist,
-      word.length + maxDist,
-    ) as Array<{ word: string }>;
+    let candidates: Array<{ word: string }>;
+    try {
+      // The vocab lookup is a read whose raw driver errors used to
+      // propagate unclassified through the search fallback — same retry +
+      // [context-mode:db] logging + op/path/code context as the rest of
+      // the store.
+      candidates = withRetry(() => this.#stmtFuzzyVocab.all(
+        word.length - maxDist,
+        word.length + maxDist,
+      )) as Array<{ word: string }>;
+    } catch (err) {
+      throw storeFailure("store.fuzzyCorrect", err, this.#dbPath);
+    }
 
     let bestWord: string | null = null;
     let bestDist = maxDist + 1;
@@ -1550,9 +1598,14 @@ export class ContentStore {
       } catch (err) {
         // Graceful degradation — never break search for stale detection.
         // But the failure (a failed re-index write, a vanished file) is no
-        // longer silent: one deduped [context-mode:db] line per distinct
-        // error. The re-index itself already logged under store.index.
-        logDbError("store.refreshStaleSources", err, this.#dbPath);
+        // longer silent. Errors already enriched by an inner store op carry
+        // the kDbErrorLogged marker: their [context-mode:db] line was
+        // already emitted under the owning op (e.g. store.index) — logging
+        // again here would emit a second, code-stripped line for the same
+        // failure.
+        if (!isDbErrorAlreadyLogged(err)) {
+          logDbError("store.refreshStaleSources", err, this.#dbPath);
+        }
       }
     }
   }
@@ -1560,16 +1613,31 @@ export class ContentStore {
   // ── Sources ──
 
   getSourceMeta(label: string): { label: string; chunkCount: number; codeChunkCount: number; indexedAt: string; filePath: string | null; contentHash: string | null } | null {
-    const row = this.#stmtSourceMeta.get(label) as { label: string; chunk_count: number; code_chunk_count: number; indexed_at: string; file_path: string | null; content_hash: string | null } | undefined;
+    // Raw stmt.get() — the ctx_fetch_and_index cache probe (server.ts
+    // fetchOneUrl) runs through here BEFORE any fetch/indexing, so an
+    // IOERR used to reject the whole batch as a bare driver error with
+    // nothing in any log. Same retry + context contract as the writes.
+    let row: { label: string; chunk_count: number; code_chunk_count: number; indexed_at: string; file_path: string | null; content_hash: string | null } | undefined;
+    try {
+      row = withRetry(() => this.#stmtSourceMeta.get(label)) as typeof row;
+    } catch (err) {
+      throw storeFailure("store.getSourceMeta", err, this.#dbPath);
+    }
     if (!row) return null;
     return { label: row.label, chunkCount: row.chunk_count, codeChunkCount: row.code_chunk_count, indexedAt: row.indexed_at, filePath: row.file_path ?? null, contentHash: row.content_hash ?? null };
   }
 
   listSources(): Array<{ label: string; chunkCount: number }> {
-    return this.#stmtListSources.all() as Array<{
-      label: string;
-      chunkCount: number;
-    }>;
+    // ctx_search's no-results path lists sources here — same retry +
+    // context contract as the write paths.
+    try {
+      return withRetry(() => this.#stmtListSources.all()) as Array<{
+        label: string;
+        chunkCount: number;
+      }>;
+    } catch (err) {
+      throw storeFailure("store.listSources", err, this.#dbPath);
+    }
   }
 
   /**
@@ -1579,13 +1647,18 @@ export class ContentStore {
    * round trip instead of inferring it from snapshot diffs.
    */
   getIndexState(): { totalChunks: number; totalSources: number; lastIndexedAt?: string } {
-    const row = (this.#db
-      .prepare("SELECT COALESCE(SUM(chunk_count), 0) AS total_chunks, COUNT(*) AS total_sources, MAX(indexed_at) AS last_indexed_at FROM sources")
-      .get() as {
-        total_chunks: number;
-        total_sources: number;
-        last_indexed_at: string | null;
-      });
+    let row: {
+      total_chunks: number;
+      total_sources: number;
+      last_indexed_at: string | null;
+    };
+    try {
+      row = withRetry(() => this.#db
+        .prepare("SELECT COALESCE(SUM(chunk_count), 0) AS total_chunks, COUNT(*) AS total_sources, MAX(indexed_at) AS last_indexed_at FROM sources")
+        .get()) as typeof row;
+    } catch (err) {
+      throw storeFailure("store.getIndexState", err, this.#dbPath);
+    }
     return {
       totalChunks: row.total_chunks ?? 0,
       totalSources: row.total_sources ?? 0,
@@ -1598,12 +1671,19 @@ export class ContentStore {
    * Use this for inventory/listing where you need all sections, not search.
    */
   getChunksBySource(sourceId: number): SearchResult[] {
-    const rows = this.#stmtChunksBySource.all(sourceId) as Array<{
+    let rows: Array<{
       title: string;
       content: string;
       content_type: string;
       label: string;
     }>;
+    try {
+      // Batch/introspection path (ctx_index directory mode, chunk listing)
+      // — same retry + context contract as the write paths.
+      rows = withRetry(() => this.#stmtChunksBySource.all(sourceId)) as typeof rows;
+    } catch (err) {
+      throw storeFailure("store.getChunksBySource", err, this.#dbPath);
+    }
 
     return rows.map((r) => ({
       title: r.title,
@@ -1617,9 +1697,12 @@ export class ContentStore {
   // ── Vocabulary ──
 
   getDistinctiveTerms(sourceId: number, maxTerms: number = 40): string[] {
-    const stats = this.#stmtSourceChunkCount.get(sourceId) as
-      | { chunk_count: number }
-      | undefined;
+    let stats: { chunk_count: number } | undefined;
+    try {
+      stats = withRetry(() => this.#stmtSourceChunkCount.get(sourceId)) as typeof stats;
+    } catch (err) {
+      throw storeFailure("store.getDistinctiveTerms", err, this.#dbPath);
+    }
 
     if (!stats || stats.chunk_count < 3) return [];
 
@@ -1627,20 +1710,31 @@ export class ContentStore {
     const minAppearances = 2;
     const maxAppearances = Math.max(3, Math.ceil(totalChunks * 0.4));
 
-    // Stream chunks one at a time to avoid loading all content into memory
-    // Count document frequency (how many sections contain each word)
-    const docFreq = new Map<string, number>();
-
-    for (const row of this.#stmtChunkContent.iterate(sourceId) as Iterable<{ content: string }>) {
-      const words = new Set(
-        row.content
-          .toLowerCase()
-          .split(/[^\p{L}\p{N}_-]+/u)
-          .filter((w) => w.length >= 3 && !STOPWORDS.has(w)),
-      );
-      for (const word of words) {
-        docFreq.set(word, (docFreq.get(word) ?? 0) + 1);
+    // Stream chunks one at a time to avoid loading all content into memory.
+    // Count document frequency (how many sections contain each word).
+    // The whole aggregation is wrapped so a transient IOERR mid-stream
+    // retries from a clean slate — docFreq is rebuilt, never half-populated.
+    const collectDocFreq = (): Map<string, number> => {
+      const docFreq = new Map<string, number>();
+      for (const row of this.#stmtChunkContent.iterate(sourceId) as Iterable<{ content: string }>) {
+        const words = new Set(
+          row.content
+            .toLowerCase()
+            .split(/[^\p{L}\p{N}_-]+/u)
+            .filter((w) => w.length >= 3 && !STOPWORDS.has(w)),
+        );
+        for (const word of words) {
+          docFreq.set(word, (docFreq.get(word) ?? 0) + 1);
+        }
       }
+      return docFreq;
+    };
+
+    let docFreq: Map<string, number>;
+    try {
+      docFreq = withRetry(collectDocFreq);
+    } catch (err) {
+      throw storeFailure("store.getDistinctiveTerms", err, this.#dbPath);
     }
 
     const filtered = Array.from(docFreq.entries())

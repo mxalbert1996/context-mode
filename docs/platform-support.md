@@ -158,7 +158,18 @@ OpenCode uses a TypeScript plugin paradigm instead of JSON stdin/stdout. Hooks a
 - `experimental.session.compacting` -- equivalent to PreCompact (experimental)
 - `experimental.chat.system.transform` -- SessionStart-equivalent (cross-session resume injection)
 
-**Blocking:** `throw Error` in `tool.execute.before` handler
+**Blocking:** `throw Error` in `tool.execute.before` handler — for `deny` patterns and for `ask` matches inside `ctx_*` sandbox tools (the host cannot gate those; on platforms without a confirmation path the routing layer denies such ask matches directly with an actionable reason). `permissions.ask` matches on ordinary Bash commands pass through to OpenCode's own permission system instead: the plugin hook has no interactive confirmation path, and hard-blocking a "confirm with me" rule silently inverted the user's intent. Ask-matched Bash commands remain subject to context-mode's normal Stage-2 routing (e.g. curl/build-tool commands are still redirected).
+
+**Permissions (OpenCode v2):** on v2 hosts that expose `ctx.permission.hook("evaluate")`, the plugin additionally bridges context-mode's security policies into OpenCode's permission system, which asserts every core-tool action before execution:
+
+- `permissions.deny` match → the permission decision is set to `deny` with the policy reason. Deny enforcement is normally pre-empted by the `tool.execute.before` throw (which fires earlier and is unaffected by `--auto`); the hook path is defense-in-depth for any assert path `execute.before` misses.
+- `permissions.ask` match → the decision is set to `ask`, surfacing OpenCode's interactive confirmation in TUI runs even when host allow rules would have auto-approved the command. Ask is honored from **every policy tier** — a project-shipped `.claude/settings.json` `allow` entry cannot mask the user's global ask rule. Two host-behavior caveats (both verified against a live opencode v2 host): under `--auto` the host auto-approves the resulting ask too (an explicit opt-in), and non-interactive runs auto-reject asks unless `--auto` is passed.
+- `permissions.allow` match (global tiers only — the user's own `~/.claude/settings.json` and adapter global settings; a project-shipped `.claude/settings.json` cannot weaken the host's confirmation by pre-approving commands, and an explicit ask from any tier wins over an allow) → the decision is set to `allow`, skipping the host's default prompt for commands the user's own rules pre-approve.
+- No match → no opinion: the host's own permission rules, its default effect, and `--auto`/noninteractive auto-reject behavior stay exactly as computed.
+
+Precedence note: a context-mode `permissions.ask` match takes priority over OpenCode's saved "always allow" answers and any host allow rule — the evaluate hook receives only the computed effect, with no provenance to distinguish them, so the bridge always sets the permission **effect** to `ask` for a matching policy, prompting in interactive TUI runs (subject to the `--auto` auto-approval and the earlier `tool.execute.before` deny/redirect behaviors documented above — a command already redirected by `execute.before` is evaluated in its rewritten form). This is deliberate: the user's ask rules express a confirmation requirement.
+
+This covers host core-tool actions (the `shell` tool). Plugin-registered tools — the `ctx_*` tools themselves — are not permission-evaluated by OpenCode v2, so their gating stays entirely in `tool.execute.before`.
 
 **Arg Modification:** `output.args` mutation
 
@@ -737,7 +748,7 @@ OpenClaw is an OpenAI-stack agent gateway. context-mode ships as a native gatewa
 
 **Notes / Caveats:**
 - TS plugin paradigm — hooks run in-process, so there is no shell command to chmod and no platform-specific stdin/stdout quirks
-- `ask` decisions are converted to `block` (with the original reason) since the gateway has no interactive confirmation path
+- `ask` decisions from `ctx_*` sandbox tools are converted to `block` (with the original reason) since the gateway has no interactive confirmation path; `ask` matches on ordinary tool calls (e.g. Bash) pass through to the gateway's own permission system instead, subject to context-mode's normal Stage-2 routing redirects (e.g. curl/build-tool)
 - `context` decisions inside `tool_call:before` are dropped — context injection must be routed through `before_prompt_build` or the registered context engine
 - Session ID falls back to `pid-${process.ppid}` when the gateway does not surface one
 

@@ -646,6 +646,17 @@ interface PluginRuntime {
     routePreToolUse: (...args: unknown[]) => any;
     /** v2-native availability signal (hooks/core/routing.mjs) — optional: older routing copies lack it. */
     setContextModeToolsAvailable?: (available: boolean) => void;
+    /**
+     * v2 permission-evaluate routing (hooks/core/routing.mjs) — optional:
+     * older routing copies lack it, and the permission bridge no-ops (fail
+     * open, host decision untouched) when absent.
+     */
+    routePermissionEvaluate?: (
+      action: unknown,
+      resources: unknown,
+      projectDir: unknown,
+      platform: unknown,
+    ) => { effect: "allow" | "deny" | "ask"; message?: string } | null;
   };
   routingBlock: string;
   autoInjectionMod: { buildAutoInjection: (events: unknown) => string };
@@ -1620,6 +1631,90 @@ async function registerEventBusV2(
 }
 
 /**
+ * OPTIONAL: register the v2 permission "evaluate" hook — the surface that
+ * restores true ask/confirmation semantics on OpenCode v2 (verified against
+ * opencode2 beta-19135 live probe; see .research/opencode-v2-permission-hooks.md).
+ *
+ * The host asserts every core-tool action (shell, read, …) through its
+ * permission system before execution and lets the hook MUTATE the decision
+ * (event.effect / event.message). The bridge routes the event through the
+ * shared routing engine's routePermissionEvaluate and applies its verdict:
+ *
+ *   - deny → effect "deny" — blocked with the policy reason (normally
+ *     pre-empted by the execute.before throw which fires earlier —
+ *     this is defense-in-depth for assert paths execute.before cannot see)
+ *   - ask  → effect "ask" — an interactive confirmation in TUI runs,
+ *     restoring the user's ask intent even when host allow rules would
+ *     auto-approve; under `--auto` the host auto-approves the ask too
+ *     (explicit opt-in, verified live)
+ *   - allow → effect "allow" — skips the host's default-ask prompt for
+ *     commands the user's own GLOBAL permission rules pre-approve
+ *   - null → untouched — the host decision (its rules / default ask / --auto)
+ *     stays exactly as computed
+ *
+ * Plugin-registered tools (the ctx_* tools themselves) are NOT
+ * permission-evaluated (empirically verified — see
+ * .research/opencode-v2-empirical-test-results.md), so their gating stays in
+ * tool.execute.before; this hook only covers host core-tool actions, with
+ * zero overlap or double-handling: execute.before keeps deny/modify/context,
+ * and its Stage-1 ask already falls through (opencode is not in
+ * ASK_CAPABLE_PLATFORMS), so the ask decision is expressed HERE, once.
+ *
+ * Fail-open: a routing throw leaves the event untouched (mirrors the
+ * execute.before catch — a routing failure must never brick tool calls).
+ */
+async function registerPermissionHookV2(
+  ctx: V2SetupContext | undefined,
+  rt: PluginRuntime,
+): Promise<V2RegisterOutcome> {
+  const permissionHook =
+    ctx?.permission && typeof ctx.permission.hook === "function" ? ctx.permission.hook : undefined;
+  if (!permissionHook || !ctx?.permission) return { ok: false };
+  const routePermissionEvaluate = rt.routing.routePermissionEvaluate;
+  const handler = createV2PermissionEvaluateHandler(rt, (action, resources) => {
+    if (typeof routePermissionEvaluate !== "function") return null; // older routing copy — no-op
+    return routePermissionEvaluate(action, resources, rt.projectDir, rt.platform);
+  });
+  return tryRegister(permissionHook, ctx.permission, "evaluate", handler);
+}
+
+/**
+ * The v2 permission-evaluate bridge handler. Extracted (and exported) so the
+ * behavioral contracts are unit-testable: malformed events and a routing
+ * throw must leave the host decision untouched (fail-open), and a torn-down
+ * runtime must no-op (liveness gate). `route` is pre-bound to the runtime's
+ * projectDir/platform by the caller.
+ */
+export function createV2PermissionEvaluateHandler(
+  rt: Pick<PluginRuntime, "closed" | "logHookError">,
+  route: (
+    action: string,
+    resources: string[],
+  ) => { effect: "allow" | "deny" | "ask"; message?: string } | null,
+): (event: unknown) => Promise<undefined> {
+  return async (event: unknown) => {
+    if (rt.closed) return undefined; // torn down — silent no-op
+    const ev = (event ?? {}) as Record<string, any>;
+    const action = typeof ev.action === "string" ? ev.action : "";
+    const resources = Array.isArray(ev.resources)
+      ? ev.resources.filter((r: unknown) => typeof r === "string")
+      : [];
+    if (!action || resources.length === 0) return undefined;
+    let routed: { effect: "allow" | "deny" | "ask"; message?: string } | null = null;
+    try {
+      routed = route(action, resources);
+    } catch (err) {
+      rt.logHookError("v2.permission.evaluate", err, v2SessionIdOf(ev));
+      return undefined; // fail-open — host decision untouched
+    }
+    if (!routed) return undefined;
+    ev.effect = routed.effect;
+    if (typeof routed.message === "string") ev.message = routed.message;
+    return undefined; // mutation is the contract — the return value is ignored
+  };
+}
+
+/**
  * MANDATORY: register the native ctx_* tools via ctx.tool.transform(editor)
  * (verified v2 API). The ToolEditor receives one ToolInfo per ctx_* tool:
  *   { name, description, input: <JSON Schema from the SAME Zod schema the
@@ -1994,9 +2089,20 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
     });
     disposes.push(...eventBus.disposes);
 
+    // Optional: permission "evaluate" hook — true ask/allow security
+    // semantics on permission-evaluated actions (see registerPermissionHookV2).
+    const permissionHook = await attemptOptionalV2(activeRt, {
+      surfacePresent: typeof ctx?.permission?.hook === "function",
+      register: () => registerPermissionHookV2(ctx, activeRt),
+      logKeyMissing: "v2-permission-hook-missing",
+      missingMessage:
+        "context-mode v2: permission evaluate hook unavailable (no ctx.permission.hook) — ask/allow security semantics inactive; deny enforcement stays on tool.execute.before",
+    });
+    disposes.push(...permissionHook.disposes);
+
     rt.logOnce(
       "v2-setup-complete",
-      `context-mode v2 setup complete: native tools via ctx.tool.transform; tool hooks via ${toolRegs.via}; session context: ${sessionContext.status}; prompt capture: ${promptCapture.status}; event bus: ${eventBus.status}`,
+      `context-mode v2 setup complete: native tools via ctx.tool.transform; tool hooks via ${toolRegs.via}; session context: ${sessionContext.status}; prompt capture: ${promptCapture.status}; event bus: ${eventBus.status}; permission hook: ${permissionHook.status}`,
       "info",
     );
 

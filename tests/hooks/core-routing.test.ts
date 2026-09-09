@@ -12,7 +12,7 @@ import {
   utimesSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import {
   sentinelDir,
@@ -37,6 +37,12 @@ let routePreToolUse: (
 
 let resetGuidanceThrottle: (sessionId?: string) => void;
 let initSecurity: (buildDir: string) => Promise<boolean>;
+let routePermissionEvaluate: (
+  action: string,
+  resources: string[],
+  projectDir?: string,
+  platform?: string,
+) => { effect: "allow" | "deny" | "ask"; message?: string } | null;
 let ROUTING_BLOCK: string;
 let createRoutingBlock: (t: any, options?: { includeCommands?: boolean; toolSearchBootstrap?: boolean }) => string;
 let READ_GUIDANCE: string;
@@ -47,6 +53,7 @@ beforeAll(async () => {
   routePreToolUse = mod.routePreToolUse;
   resetGuidanceThrottle = mod.resetGuidanceThrottle;
   initSecurity = mod.initSecurity;
+  routePermissionEvaluate = mod.routePermissionEvaluate;
 
   const constants = await import("../../hooks/routing-block.mjs");
   ROUTING_BLOCK = constants.ROUTING_BLOCK;
@@ -769,6 +776,330 @@ describe("routePreToolUse", () => {
       );
       expect(result?.action).toBe("deny");
       expect(result?.reason).toContain("deny pattern");
+    });
+  });
+
+  describe("Bash ask-pattern platform routing (ask passthrough)", () => {
+    let projectDir: string;
+    let homeDir: string;
+    let previousHome: string | undefined;
+
+    beforeAll(async () => {
+      await initSecurity(resolve(process.cwd(), "build"));
+    });
+
+    beforeEach(() => {
+      projectDir = mkdtempSync(join(tmpdir(), "ctx-ask-routing-"));
+      mkdirSync(join(projectDir, ".claude"), { recursive: true });
+      writeFileSync(
+        join(projectDir, ".claude", "settings.local.json"),
+        JSON.stringify({
+          permissions: {
+            ask: ["Bash(git commit:*)", "Bash(curl:*)"],
+            deny: ["Bash(sudo *)"],
+          },
+        }),
+        "utf-8",
+      );
+      // Isolate HOME so the developer machine's ~/.claude/settings.json
+      // cannot leak global policies into these assertions.
+      homeDir = mkdtempSync(join(tmpdir(), "ctx-ask-home-"));
+      previousHome = process.env.HOME;
+      process.env.HOME = homeDir;
+    });
+
+    afterEach(() => {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      try { rmSync(projectDir, { recursive: true, force: true }); } catch {}
+      try { rmSync(homeDir, { recursive: true, force: true }); } catch {}
+    });
+
+    // An ask pattern expresses "confirm with me" — a prompt, not a block.
+    // Platforms whose hooks cannot surface a prompt must NOT receive the ask
+    // decision for a Bash call: their adapters degrade ask into a hard block
+    // (OpenCode/KiloCode plugins throw, OpenClaw blocks), which silently
+    // turned a confirmation intent into a denial.
+    it.each(["opencode", "kilo", "openclaw"])(
+      "falls through an ask match on prompt-incapable platform %s — the host permission system decides",
+      (platform) => {
+        const result = routePreToolUse(
+          "bash",
+          { command: 'git commit -m "fix"' },
+          projectDir,
+          platform,
+          `ask-fallthrough-${platform}`,
+        );
+        expect(result?.action).not.toBe("ask");
+        expect(result?.action).not.toBe("deny");
+      },
+    );
+
+    it.each(["claude-code", "cursor"])(
+      "still returns ask on prompt-capable platform %s",
+      (platform) => {
+        const result = routePreToolUse(
+          "Bash",
+          { command: 'git commit -m "fix"' },
+          projectDir,
+          platform,
+          `ask-capable-${platform}`,
+        );
+        expect(result?.action).toBe("ask");
+      },
+    );
+
+    it("undefined platform keeps claude-code ask semantics (back-compat)", () => {
+      const result = routePreToolUse(
+        "Bash",
+        { command: 'git commit -m "fix"' },
+        projectDir,
+        undefined,
+        "ask-default-platform",
+      );
+      expect(result?.action).toBe("ask");
+    });
+
+    it("deny patterns still deny on prompt-incapable platforms", () => {
+      const result = routePreToolUse(
+        "bash",
+        { command: "sudo whoami" },
+        projectDir,
+        "opencode",
+        "ask-deny-intact",
+      );
+      expect(result?.action).toBe("deny");
+      expect(result?.reason).toContain("deny pattern");
+    });
+
+    // The ctx_* sandbox tools are the surface the host CANNOT gate — ask
+    // enforcement there must stay fail-safe on every platform: prompt where
+    // possible, deny elsewhere (the gemini-cli/codex/kimi/kiro formatters
+    // drop ask, which would fail the sandbox open).
+    it.each([
+      ["ctx_execute", { language: "shell", code: 'git commit -m "fix"' }],
+      ["ctx_execute_file", { path: "s.sh", language: "shell", code: 'git commit -m "fix"' }],
+      ["ctx_batch_execute", { commands: [{ label: "c", command: 'git commit -m "fix"' }] }],
+    ])("ctx_* sandbox surfaces ask on prompt-capable platform for %s", (toolName, toolInput) => {
+      const result = routePreToolUse(toolName, toolInput, projectDir, "claude-code", `ask-sandbox-ask-${toolName}`);
+      expect(result?.action).toBe("ask");
+    });
+
+    it.each([
+      ["ctx_execute", { language: "shell", code: 'git commit -m "fix"' }],
+      ["ctx_execute_file", { path: "s.sh", language: "shell", code: 'git commit -m "fix"' }],
+      ["ctx_batch_execute", { commands: [{ label: "c", command: 'git commit -m "fix"' }] }],
+    ])("ctx_* sandbox denies ask-matched shell code on prompt-incapable platform for %s", (toolName, toolInput) => {
+      const result = routePreToolUse(toolName, toolInput, projectDir, "opencode", `ask-sandbox-deny-${toolName}`);
+      expect(result?.action).toBe("deny");
+      expect(result?.reason).toContain("ask pattern");
+      expect(result?.reason).toContain("no interactive confirmation path");
+    });
+
+    it.each(["gemini-cli", "codex", "kimi", "kiro", "openclaw"])(
+      "ctx_* sandbox ask cannot fail open through a passthrough formatter on %s",
+      (platform) => {
+        const result = routePreToolUse(
+          "ctx_execute",
+          { language: "shell", code: 'git commit -m "fix"' },
+          projectDir,
+          platform,
+          `ask-sandbox-formatter-${platform}`,
+        );
+        expect(result?.action).toBe("deny");
+        expect(result?.reason).toContain("ask pattern");
+      },
+    );
+
+    it("Stage 2 routing still applies to an ask-matched command after the fall-through", () => {
+      const result = routePreToolUse(
+        "bash",
+        { command: "curl https://example.com/data" },
+        projectDir,
+        "opencode",
+        "ask-curl-stage2",
+      );
+      expect(result?.action).toBe("modify");
+      expect(String(result?.updatedInput?.command)).toMatch(/^echo "context-mode/);
+    });
+  });
+
+  // ─── OpenCode v2 permission evaluate ──────────────────
+
+  describe("OpenCode v2 permission evaluate (routePermissionEvaluate)", () => {
+    let projectDir: string;
+    let homeDir: string;
+    let previousHome: string | undefined;
+    let previousPlatform: string | undefined;
+
+    beforeAll(async () => {
+      await initSecurity(resolve(process.cwd(), "build"));
+    });
+
+    beforeEach(() => {
+      projectDir = mkdtempSync(join(tmpdir(), "ctx-perm-eval-"));
+      mkdirSync(join(projectDir, ".claude"), { recursive: true });
+      writeFileSync(
+        join(projectDir, ".claude", "settings.local.json"),
+        JSON.stringify({
+          permissions: {
+            deny: ["Bash(sudo *)"],
+            ask: ["Bash(git push:*)"],
+          },
+        }),
+        "utf-8",
+      );
+      // Isolated HOME so the developer machine's global policies cannot
+      // leak into these assertions.
+      homeDir = mkdtempSync(join(tmpdir(), "ctx-perm-eval-home-"));
+      previousHome = process.env.HOME;
+      previousPlatform = process.env.CONTEXT_MODE_PLATFORM;
+      process.env.HOME = homeDir;
+      process.env.CONTEXT_MODE_PLATFORM = "opencode";
+    });
+
+    afterEach(() => {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPlatform === undefined) delete process.env.CONTEXT_MODE_PLATFORM;
+      else process.env.CONTEXT_MODE_PLATFORM = previousPlatform;
+      try { rmSync(projectDir, { recursive: true, force: true }); } catch {}
+      try { rmSync(homeDir, { recursive: true, force: true }); } catch {}
+    });
+
+    /** Stage the same permissions on both candidate global settings tiers. */
+    const writeGlobal = (permissions: Record<string, string[]>) => {
+      for (const p of [
+        join(homeDir, ".claude", "settings.json"),
+        join(homeDir, ".config", "opencode", "settings.json"),
+      ]) {
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, JSON.stringify({ permissions }), "utf-8");
+      }
+    };
+
+    it("returns null for non-shell actions (no policy mapping)", () => {
+      expect(routePermissionEvaluate("read", ["/etc/passwd"], projectDir, "opencode")).toBeNull();
+      expect(routePermissionEvaluate("write", ["foo.txt"], projectDir, "opencode")).toBeNull();
+      expect(routePermissionEvaluate("external_directory", ["/etc"], projectDir, "opencode")).toBeNull();
+    });
+
+    it("returns null for empty or blank resources", () => {
+      expect(routePermissionEvaluate("shell", [], projectDir, "opencode")).toBeNull();
+      expect(routePermissionEvaluate("shell", ["", "  "], projectDir, "opencode")).toBeNull();
+    });
+
+    it("denies a deny-pattern match with the policy reason", () => {
+      const r = routePermissionEvaluate("shell", ["sudo whoami"], projectDir, "opencode");
+      expect(r?.effect).toBe("deny");
+      expect(r?.message).toContain("deny pattern");
+      expect(r?.message).toContain("sudo *");
+    });
+
+    it("asks on an ask-pattern match — a prompt, not a block", () => {
+      const r = routePermissionEvaluate("shell", ["git push origin main"], projectDir, "opencode");
+      expect(r?.effect).toBe("ask");
+      expect(r?.message).toContain("ask pattern");
+      expect(r?.message).toContain("git push:*");
+    });
+
+    it("deny beats ask across chained statements", () => {
+      const r = routePermissionEvaluate(
+        "shell",
+        ["git push origin main", "sudo whoami"],
+        projectDir,
+        "opencode",
+      );
+      expect(r?.effect).toBe("deny");
+    });
+
+    it("returns null (no opinion) when nothing matches — the host decides", () => {
+      expect(routePermissionEvaluate("shell", ["ls -la"], projectDir, "opencode")).toBeNull();
+    });
+
+    it("global allow rules pre-approve and skip the host ask", () => {
+      writeGlobal({ allow: ["Bash(git status:*)", "Bash(git diff:*)"] });
+      const r = routePermissionEvaluate("shell", ["git status"], projectDir, "opencode");
+      expect(r?.effect).toBe("allow");
+    });
+
+    it("global deny rules also deny (global tiers can harden)", () => {
+      writeGlobal({ deny: ["Bash(rm -rf *)"] });
+      const r = routePermissionEvaluate("shell", ["rm -rf /tmp/x"], projectDir, "opencode");
+      expect(r?.effect).toBe("deny");
+    });
+
+    it("project-tier allow alone does NOT pre-approve — cannot weaken the host confirmation", () => {
+      writeFileSync(
+        join(projectDir, ".claude", "settings.local.json"),
+        JSON.stringify({ permissions: { allow: ["Bash(git status:*)"] } }),
+        "utf-8",
+      );
+      expect(routePermissionEvaluate("shell", ["git status"], projectDir, "opencode")).toBeNull();
+    });
+
+    it("global allow does not override a project deny", () => {
+      writeGlobal({ allow: ["Bash(sudo:*)"] });
+      const r = routePermissionEvaluate("shell", ["sudo whoami"], projectDir, "opencode");
+      expect(r?.effect).toBe("deny");
+    });
+
+    it("mixed allow + unmatched statements are not pre-approved (chain must be fully allowed)", () => {
+      writeGlobal({ allow: ["Bash(git status:*)"] });
+      const r = routePermissionEvaluate(
+        "shell",
+        ["git status", "curl https://example.com"],
+        projectDir,
+        "opencode",
+      );
+      expect(r).toBeNull();
+    });
+
+    it("project ask still prompts when a global allow would cover the command", () => {
+      writeGlobal({ allow: ["Bash(git push:*)"] });
+      const r = routePermissionEvaluate("shell", ["git push origin main"], projectDir, "opencode");
+      expect(r?.effect).toBe("ask");
+    });
+
+    // evaluateCommand on a COMBINED policy list returns the first definitive
+    // result, so a project-tier allow would mask a later global-tier ask —
+    // and OpenCode v2's default shell permission is allow, so the user's ask
+    // would silently vanish. The ask check must therefore evaluate tiers
+    // independently.
+    it("project allow does NOT mask a global ask — ask is honored across tiers", () => {
+      writeFileSync(
+        join(projectDir, ".claude", "settings.local.json"),
+        JSON.stringify({ permissions: { allow: ["Bash(git push:*)"] } }),
+        "utf-8",
+      );
+      writeGlobal({ ask: ["Bash(git push:*)"] });
+      const r = routePermissionEvaluate("shell", ["git push origin main"], projectDir, "opencode");
+      expect(r?.effect).toBe("ask");
+      expect(r?.message).toContain("ask pattern");
+    });
+
+    it("adapter-global allow does NOT mask a claude-global ask", () => {
+      // Isolate: project carries no ask/deny for git push.
+      writeFileSync(
+        join(projectDir, ".claude", "settings.local.json"),
+        JSON.stringify({ permissions: { deny: ["Bash(sudo *)"] } }),
+        "utf-8",
+      );
+      // Stage the two GLOBAL tiers with CONFLICTING decisions — the combined
+      // readBashPolicies order is [adapter-global, claude-global], so a naive
+      // combined evaluation would return the adapter-global allow and never
+      // see the claude-global ask.
+      const adapterGlobal = join(homeDir, ".config", "opencode", "settings.json");
+      const claudeGlobal = join(homeDir, ".claude", "settings.json");
+      for (const [p, permissions] of [
+        [adapterGlobal, { allow: ["Bash(git push:*)"] }],
+        [claudeGlobal, { ask: ["Bash(git push:*)"] }],
+      ] as const) {
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, JSON.stringify({ permissions }), "utf-8");
+      }
+      const r = routePermissionEvaluate("shell", ["git push origin main"], projectDir, "opencode");
+      expect(r?.effect).toBe("ask");
     });
   });
 

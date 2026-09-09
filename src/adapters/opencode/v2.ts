@@ -89,6 +89,17 @@ export type V2SetupContext = {
     /** AsyncIterable of { type, ... } events; exact event shapes UNCONFIRMED. */
     subscribe?: (options?: { signal?: AbortSignal }) => unknown;
   };
+  /**
+   * v2 permission domain (verified against opencode2 beta-19135 live probe:
+   * ctx.permission.hook("evaluate", cb) fires for every core-tool permission
+   * assert with a MUTABLE event { action, resources, source?, effect, message? }
+   * — hook mutations of effect/message win the decision). Optional: older v2
+   * builds and all v1 hosts lack the surface; the plugin degrades to the
+   * execute.before throw-based behavior there.
+   */
+  permission?: {
+    hook?: (name: string, cb: (event: unknown) => unknown) => unknown;
+  };
 };
 
 // ── Zod → JSON-Schema (ToolInfo.input) ────────────────────

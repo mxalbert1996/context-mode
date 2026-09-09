@@ -1,4 +1,4 @@
-import "./setup-home";
+import { fakeHome } from "./setup-home";
 /**
  * Tests for opencode v1/v2 dual-flavor plugin compatibility.
  *
@@ -30,7 +30,7 @@ import "./setup-home";
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
   __resetPluginLogSinkForTests,
@@ -92,12 +92,14 @@ function makeV2Ctx(
     hookImpl?: (name: unknown, cb: unknown) => Promise<void>;
     withSession?: boolean;
     withEventBus?: boolean;
+    withPermission?: boolean;
   } = {},
 ) {
   const logs = opts.log ?? [];
   const addedTools = new Map<string, any>();
   const toolHooks = new Map<string, (event: unknown) => unknown>();
   const sessionHooks = new Map<string, (event: unknown) => unknown>();
+  const permissionHooks = new Map<string, (event: unknown) => unknown>();
   const appliedNamespaces: unknown[] = [];
   const eventQueue: unknown[] = [];
   const eventWaiters: Array<() => void> = [];
@@ -193,12 +195,23 @@ function makeV2Ctx(
       },
     };
   }
+  if (opts.withPermission) {
+    ctx.permission = {
+      hook: async (name: string, cb: (event: unknown) => unknown) => {
+        permissionHooks.set(name, cb);
+        return () => {
+          permissionHooks.delete(name);
+        };
+      },
+    };
+  }
   return {
     ctx,
     logs,
     addedTools,
     toolHooks,
     sessionHooks,
+    permissionHooks,
     editor,
     appliedNamespaces,
     pushEvent,
@@ -1432,6 +1445,162 @@ describe("opencode v2 compatibility", () => {
       } finally {
         stderrSpy.mockRestore();
       }
+    });
+  });
+
+  // ── (g) v2 permission evaluate hook ──────────────────
+
+  describe("v2 permission evaluate hook", () => {
+    /** Stage project-tier permissions and run a full v2 setup with the surface. */
+    async function setupWithPermission(
+      projectDir: string,
+      permissions?: Record<string, string[]>,
+      logCollector?: LogEntry[],
+    ) {
+      if (permissions) {
+        mkdirSync(join(projectDir, ".claude"), { recursive: true });
+        writeFileSync(
+          join(projectDir, ".claude", "settings.local.json"),
+          JSON.stringify({ permissions }),
+          "utf-8",
+        );
+      }
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const host = makeV2Ctx(projectDir, { withPermission: true, log: logCollector });
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => Promise<void>;
+      const handler = host.permissionHooks.get("evaluate");
+      expect(typeof handler).toBe("function");
+      return { host, cleanup, handler: handler! };
+    }
+
+    it("registers on ctx.permission.hook and teardown disposes it", async () => {
+      const { host, cleanup } = await setupWithPermission(join(tempDir, "perm-hook-reg"));
+      expect(host.permissionHooks.has("evaluate")).toBe(true);
+      await cleanup();
+      expect(host.permissionHooks.has("evaluate")).toBe(false);
+    });
+
+    it("completes setup without the surface and logs the one-time degradation", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "perm-hook-missing");
+      const logs: LogEntry[] = [];
+      const host = makeV2Ctx(projectDir, { log: logs });
+      const cleanup = await ContextModeSetup(host.ctx as any);
+      expect(typeof cleanup).toBe("function");
+      expect(
+        logs.some((l) => /permission evaluate hook unavailable/.test(l.message ?? "")),
+      ).toBe(true);
+      expect(logs.some((l) => /permission hook: unavailable/.test(l.message ?? ""))).toBe(true);
+      await (cleanup as () => Promise<void>)();
+    });
+
+    it("deny match mutates effect to deny with the policy reason", async () => {
+      const { cleanup, handler } = await setupWithPermission(join(tempDir, "perm-hook-deny"), {
+        deny: ["Bash(sudo *)"],
+      });
+      const ev = { action: "shell", resources: ["sudo whoami"], effect: "allow", sessionID: "s1" };
+      await handler(ev);
+      expect(ev.effect).toBe("deny");
+      expect(ev.message).toContain("deny pattern");
+      expect(ev.message).toContain("sudo *");
+      await cleanup();
+    });
+
+    it("ask match mutates effect to ask — a real prompt, not a block", async () => {
+      const { cleanup, handler } = await setupWithPermission(join(tempDir, "perm-hook-ask"), {
+        ask: ["Bash(git push:*)"],
+      });
+      const ev = { action: "shell", resources: ["git push origin main"], effect: "allow", sessionID: "s1" };
+      await handler(ev);
+      expect(ev.effect).toBe("ask");
+      expect(ev.message).toContain("ask pattern");
+      await cleanup();
+    });
+
+    it("global allow pre-approves a command the host would have asked for", async () => {
+      const globalSettings = join(fakeHome, ".claude", "settings.json");
+      mkdirSync(dirname(globalSettings), { recursive: true });
+      writeFileSync(
+        globalSettings,
+        JSON.stringify({ permissions: { allow: ["Bash(git status:*)"] } }),
+        "utf-8",
+      );
+      try {
+        const { cleanup, handler } = await setupWithPermission(join(tempDir, "perm-hook-allow"));
+        const ev = { action: "shell", resources: ["git status"], effect: "ask", sessionID: "s1" };
+        await handler(ev);
+        expect(ev.effect).toBe("allow");
+        await cleanup();
+      } finally {
+        try { unlinkSync(globalSettings); } catch { /* best effort */ }
+      }
+    });
+
+    it("non-shell actions and unmatched commands leave the host decision untouched", async () => {
+      const { cleanup, handler } = await setupWithPermission(join(tempDir, "perm-hook-neutral"), {
+        deny: ["Bash(sudo *)"],
+      });
+      const read = { action: "read", resources: ["/etc/passwd"], effect: "ask", sessionID: "s1" };
+      await handler(read);
+      expect(read.effect).toBe("ask"); // untouched — no policy mapping
+      expect(read.message).toBeUndefined();
+
+      const unmatched = { action: "shell", resources: ["ls -la"], effect: "ask", sessionID: "s1" };
+      await handler(unmatched);
+      expect(unmatched.effect).toBe("ask"); // untouched — no opinion
+      expect(unmatched.message).toBeUndefined();
+      await cleanup();
+    });
+
+    it("malformed events (no action / no resources) are no-ops, not throws", async () => {
+      const { cleanup, handler } = await setupWithPermission(join(tempDir, "perm-hook-malformed"), {
+        deny: ["Bash(sudo *)"],
+      });
+      await expect(handler({ effect: "allow" })).resolves.toBeUndefined();
+      await expect(handler({ action: "shell", effect: "allow" })).resolves.toBeUndefined();
+      await expect(handler(null)).resolves.toBeUndefined();
+      await cleanup();
+    });
+
+    it("torn-down runtime no-ops even without a dispose handle (liveness gate)", async () => {
+      const { host, cleanup, handler } = await setupWithPermission(join(tempDir, "perm-hook-closed"), {
+        deny: ["Bash(sudo *)"],
+      });
+      // Simulates a host that lost its dispose handle — the captured closure
+      // must still honor the liveness gate.
+      host.permissionHooks.delete("evaluate");
+      await cleanup();
+      const ev = { action: "shell", resources: ["sudo whoami"], effect: "allow" };
+      await handler(ev);
+      expect(ev.effect).toBe("allow"); // untouched — closed runtime
+    });
+
+    it("routing throw fails OPEN — the host decision stays untouched", async () => {
+      const { createV2PermissionEvaluateHandler } = await import("../src/adapters/opencode/plugin.js");
+      const errors: unknown[] = [];
+      const rt = {
+        closed: false,
+        logHookError: (hook: string, err: unknown) => errors.push([hook, err]),
+      };
+      const handler = createV2PermissionEvaluateHandler(rt as any, () => {
+        throw new Error("routing exploded");
+      });
+      const ev = { action: "shell", resources: ["git push"], effect: "ask", sessionID: "s1" };
+      await expect(handler(ev)).resolves.toBeUndefined();
+      expect(ev.effect).toBe("ask"); // untouched — fail-open
+      expect(ev.message).toBeUndefined();
+      expect(errors).toHaveLength(1);
+      expect(String(errors[0][0])).toBe("v2.permission.evaluate");
+    });
+
+    it("older routing copies without routePermissionEvaluate no-op (no throw, no mutation)", async () => {
+      const { createV2PermissionEvaluateHandler } = await import("../src/adapters/opencode/plugin.js");
+      const rt = { closed: false, logHookError: () => {} };
+      const handler = createV2PermissionEvaluateHandler(rt as any, () => null);
+      const ev = { action: "shell", resources: ["sudo whoami"], effect: "allow" };
+      await handler(ev);
+      expect(ev.effect).toBe("allow");
+      expect(ev.message).toBeUndefined();
     });
   });
 });

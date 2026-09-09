@@ -474,6 +474,48 @@ describe("ContextModePlugin", () => {
       expect(output.args).toHaveProperty("additionalContext");
       expect(output.args.additionalContext).toContain("<context_guidance>");
     });
+
+    it("does not block ask-listed Bash commands (ask passthrough — OpenCode has no prompt bridge)", async () => {
+      const projectDir = join(tempDir, "before-ask-passthrough");
+      mkdirSync(join(projectDir, ".claude"), { recursive: true });
+      writeFileSync(
+        join(projectDir, ".claude", "settings.local.json"),
+        JSON.stringify({
+          permissions: {
+            ask: ["Bash(git commit:*)"],
+            deny: ["Bash(sudo *)"],
+          },
+        }),
+        "utf-8",
+      );
+
+      const plugin = await createTestPlugin(projectDir);
+
+      // Control: the deny pattern in the same settings file still hard-blocks,
+      // proving the security policy layer is active (the ask assertion below
+      // is not a vacuous pass).
+      await expect(
+        plugin["tool.execute.before"](
+          { tool: "Bash", sessionID: "ask-passthrough", callID: "call-0" },
+          { args: { command: "sudo whoami" } },
+        ),
+      ).rejects.toThrow(/security policy/);
+
+      // Pre-fix: routing returned { action: "ask" } and the plugin threw,
+      // hard-blocking git commit with an opaque "Blocked by context-mode".
+      // Post-fix: ask falls through on OpenCode — the host's own permission
+      // system decides.
+      const output = { args: { command: 'git commit -m "test commit"' } };
+      await expect(
+        plugin["tool.execute.before"](
+          { tool: "Bash", sessionID: "ask-passthrough", callID: "call-1" },
+          output,
+        ),
+      ).resolves.toBeUndefined();
+
+      // The command must not be replaced with an echo redirect either.
+      expect(String(output.args.command)).toBe('git commit -m "test commit"');
+    });
   });
 
   // ── tool.execute.after ────────────────────────────────

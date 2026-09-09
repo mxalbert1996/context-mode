@@ -686,6 +686,52 @@ function getPlatformSettingsPath(platform) {
 }
 
 /**
+ * Platforms whose PreToolUse response can surface a real "ask" confirmation
+ * prompt to the user (hooks/core/formatters.mjs emits permissionDecision:"ask"
+ * or the platform equivalent).
+ *
+ * Everywhere else: an `ask` match on an ordinary Bash command is NOT returned
+ * from routePreToolUse (see the Stage-1 comment inside — the host's own
+ * permission system decides), while the ctx_* sandbox branches deny with an
+ * actionable reason via sandboxAskDecision — the gemini-cli/codex/kimi/kiro
+ * formatters silently DROP ask, which would fail the sandbox open. Keep in
+ * sync with the per-platform `ask` formatters; claude-code also covers
+ * qwen-code, which shares the claude-code hook script and wire protocol
+ * (src/cli.ts HOOK_MAP).
+ */
+const ASK_CAPABLE_PLATFORMS = new Set([
+  "claude-code",        // + qwen-code (shared hook script / wire protocol)
+  "vscode-copilot",
+  "jetbrains-copilot",
+  "copilot-cli",
+  "cursor",
+  "antigravity-cli",
+]);
+
+/**
+ * Resolve an `ask` policy match inside the ctx_* sandbox tools for platforms
+ * with no confirmation surface. Unlike ordinary Bash calls — where the host's
+ * own permission system backs the decision up — nothing re-gates sandbox
+ * execution, and several formatters (gemini-cli, codex, kimi return null;
+ * kiro exits 0) would silently drop an `ask` decision and run the code
+ * unconfirmed. Deny with an actionable reason instead: fail-closed,
+ * consistent with the plugin adapters (OpenCode/KiloCode/OpenClaw) that
+ * block on ask.
+ */
+function sandboxAskDecision(platform, describe, matchedPattern) {
+  if (ASK_CAPABLE_PLATFORMS.has(platform || "claude-code")) {
+    return { action: "ask" };
+  }
+  return {
+    action: "deny",
+    reason:
+      `Blocked by security policy: ${describe} matches ask pattern ${matchedPattern} — ` +
+      "this platform has no interactive confirmation path for sandbox execution. " +
+      "Move the pattern to allow (or deny) in your settings to make the decision explicit.",
+  };
+}
+
+/**
  * Route a PreToolUse event. Returns normalized decision object or null for passthrough.
  *
  * @param {string} toolName - The tool name as reported by the platform
@@ -749,9 +795,25 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
           return { action: "deny", reason: `Blocked by security policy: matches deny pattern ${result.matchedPattern}` };
         }
         if (result.decision === "ask" && result.matchedPattern) {
-          return { action: "ask" };
+          // An ask pattern expresses "confirm with me" — a prompt, not a
+          // block. Only surface the ask decision on platforms whose
+          // PreToolUse response can render a real confirmation prompt
+          // (ASK_CAPABLE_PLATFORMS). Elsewhere the decision degraded into
+          // a hard block — the OpenCode/KiloCode plugins throw and OpenClaw
+          // blocks on ask — silently converting a confirmation intent into
+          // a denial: `Bash(git commit:*)` ask-listed for Claude Code's
+          // prompt hard-blocked `git commit` on OpenCode with no way to
+          // proceed. Fall through to Stage 2 and let the host's own
+          // permission system decide. The ctx_* sandbox branches below
+          // keep ask enforcement fail-safe instead — prompt where the
+          // platform can render one, deny with an actionable reason
+          // elsewhere — because no host permission system backs those
+          // calls.
+          if (ASK_CAPABLE_PLATFORMS.has(platform || "claude-code")) {
+            return { action: "ask" };
+          }
         }
-        // "allow" or no match → fall through to Stage 2
+        // "allow" or no match (or ask on a prompt-incapable platform) → fall through to Stage 2
       }
     }
 
@@ -965,7 +1027,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
           return { action: "deny", reason: `Blocked by security policy: shell code matches deny pattern ${result.matchedPattern}` };
         }
         if (result.decision === "ask" && result.matchedPattern) {
-          return { action: "ask" };
+          return sandboxAskDecision(platform, "shell code", result.matchedPattern);
         }
       }
     }
@@ -997,7 +1059,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
             return { action: "deny", reason: `Blocked by security policy: shell code matches deny pattern ${result.matchedPattern}` };
           }
           if (result.decision === "ask" && result.matchedPattern) {
-            return { action: "ask" };
+            return sandboxAskDecision(platform, "shell code", result.matchedPattern);
           }
         }
       }
@@ -1018,7 +1080,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
             return { action: "deny", reason: `Blocked by security policy: batch command "${entry.label ?? cmd}" matches deny pattern ${result.matchedPattern}` };
           }
           if (result.decision === "ask" && result.matchedPattern) {
-            return { action: "ask" };
+            return sandboxAskDecision(platform, `batch command "${entry.label ?? cmd}"`, result.matchedPattern);
           }
         }
       }
@@ -1046,5 +1108,106 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   }
 
   // Unknown tool — pass through
+  return null;
+}
+
+/**
+ * Route an OpenCode v2 permission "evaluate" event (ctx.permission.hook).
+ *
+ * v2's permission system asserts every core-tool action before execution and
+ * lets plugins mutate the decision: `event.effect` ("allow" | "deny" | "ask")
+ * and `event.message`. This maps context-mode's security policies onto that
+ * surface, restoring ask/confirmation semantics that the execute.before bridge
+ * cannot express (an ask there can only throw = hard block):
+ *
+ *   - deny match  → { effect: "deny" }   — blocked with a reason. Normally
+ *     pre-empted by the execute.before throw (which fires first and is
+ *     unaffected by --auto); kept as defense-in-depth for any assert path
+ *     execute.before misses.
+ *   - ask match   → { effect: "ask" }    — an interactive confirmation in
+ *     TUI runs, restoring the user's ask intent even when host allow rules
+ *     would have auto-approved (verified live: a project-tier allow cannot
+ *     mask a global-tier ask). Under `--auto` the host auto-approves the
+ *     resulting ask too — an explicit opt-in (verified live).
+ *   - allow match → { effect: "allow" }  — skips the host's default-ask
+ *     prompt for commands the user's own global rules pre-approve.
+ *   - no match    → null — NO OPINION: the host decision (its own rules,
+ *     default ask, or --auto) stays untouched.
+ *
+ * Asymmetry is deliberate: deny/ask are honored from ALL policy tiers
+ * (project + global — enforcement direction), while allow is honored from
+ * GLOBAL tiers only. A project-shipped .claude/settings.json can harden a
+ * repo's agent (deny/ask) but must not be able to weaken the host's
+ * confirmation by pre-approving commands in a freshly cloned repo.
+ *
+ * Only the v2 "shell" action carries Bash-policy semantics — resources are the
+ * parsed command statements of one shell invocation. Other actions (read,
+ * write, edit, …) have no context-mode policy mapping (routePreToolUse has no
+ * security branch for them either — parity) and return null.
+ *
+ * Fail-open on a missing security module, mirroring routePreToolUse Stage 1.
+ *
+ * @param {string} action - v2 permission action name ("shell" for the shell tool)
+ * @param {string[]} resources - parsed command statement strings
+ * @param {string} [projectDir] - project directory for policy lookup
+ * @param {string} [platform] - platform ID for the adapter settings path
+ * @returns {{ effect: "allow" | "deny" | "ask", message?: string } | null}
+ */
+export function routePermissionEvaluate(action, resources, projectDir, platform) {
+  if (action !== "shell") return null;
+  if (!Array.isArray(resources) || resources.length === 0) return null;
+  if (!security) return null;
+
+  const platformSettingsPath = getPlatformSettingsPath(platform);
+  // Full policies (project + global) drive deny/ask — enforcement direction.
+  const policies = security.readBashPolicies(projectDir, platformSettingsPath);
+  if (policies.length === 0) return null;
+
+  const commands = resources.filter((r) => typeof r === "string" && r.length > 0);
+  if (commands.length === 0) return null;
+
+  const results = commands.map((command) => security.evaluateCommand(command, policies));
+
+  // Deny wins across all statements (chain semantics: one denied segment
+  // blocks the whole invocation — same as evaluateCommand).
+  const denied = results.find((r) => r.decision === "deny");
+  if (denied) {
+    return {
+      effect: "deny",
+      message: `Blocked by security policy: matches deny pattern ${denied.matchedPattern}`,
+    };
+  }
+
+  // Ask: evaluated per tier INDEPENDENTLY. evaluateCommand on the combined
+  // policy list returns the FIRST definitive result, so a project-tier allow
+  // would mask a later global-tier ask — and since OpenCode v2's default
+  // shell permission is allow, the user's global ask would silently vanish.
+  // Per-policy calls keep evaluateCommand's chain/subshell parsing while
+  // honoring an explicit ask from EVERY tier.
+  for (const command of commands) {
+    for (const policy of policies) {
+      const result = security.evaluateCommand(command, [policy]);
+      if (result.decision === "ask" && result.matchedPattern) {
+        return {
+          effect: "ask",
+          message: `Confirmation required: matches ask pattern ${result.matchedPattern}`,
+        };
+      }
+    }
+  }
+
+  // Allow: global tiers only (the user's own files) — a project cannot
+  // pre-approve. All statements must be explicitly allowed, mirroring
+  // evaluateCommand's "allowed iff every segment explicitly allowed".
+  const globalPolicies = security.readBashPolicies(undefined, platformSettingsPath);
+  if (globalPolicies.length > 0) {
+    const allAllowed = commands.every((command) => {
+      const result = security.evaluateCommand(command, globalPolicies);
+      return result.decision === "allow" && result.matchedPattern;
+    });
+    if (allAllowed) return { effect: "allow" };
+  }
+
+  // No explicit match — no opinion; the host decides.
   return null;
 }

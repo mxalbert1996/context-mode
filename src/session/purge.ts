@@ -237,7 +237,8 @@ export function purgeSession(opts: PurgeOpts): PurgeResult {
     //
     // Caller is responsible for closing any persistent ContentStore
     // handle BEFORE invoking purgeSession (Windows file lock). The
-    // ctx_purge handler does this via _store?.cleanup() before delegating.
+    // ctx_purge handler does this via the per-project store cache's
+    // cleanup() before delegating.
     const ftsTargets: string[] = [];
     if (storePath && existsSync(storePath)) ftsTargets.push(storePath);
     if (contentDir) {

@@ -1208,7 +1208,7 @@ Indexed content persists in a per-project SQLite database at `~/.context-mode/co
 - **Cache hit (within TTL):** Returns a cache hint (~0.3KB) instead of re-fetching (48KB+). Model proceeds to `ctx_search`.
 - **Cache miss (TTL expired):** Re-fetches silently. No user action needed.
 - **`ttl: 0`** or **`force: true`:** Bypasses cache and re-fetches regardless of freshness.
-- **14-day cleanup:** Content databases and sources older than 14 days are removed on startup.
+- **14-day cleanup:** Sources older than 14 days are removed from the knowledge base on startup. Content DB files themselves are never auto-deleted — an open-but-idle store is indistinguishable from an abandoned one by timestamps alone, and deleting a live store's files causes unrecoverable I/O errors. Use `ctx_purge` to reclaim disk space.
 
 This means `--continue` sessions preserve indexed docs across restarts. No re-fetching, no wasted context tokens.
 

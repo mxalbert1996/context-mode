@@ -44,6 +44,7 @@ import {
   resolveContentStorageDir,
   resolveDefaultSessionDir,
   resolveSessionDbPath,
+  resolveSessionPath,
   resolveSessionStorageDir,
   resolveStatsStorageDir,
   SessionDB,
@@ -436,8 +437,19 @@ writeFileSync(
 // snippets under /tmp when the host process exits.
 process.on("exit", () => { try { unlinkSync(CM_FS_PRELOAD); } catch { /* best effort */ } });
 
-// Lazy singleton — no DB overhead unless index/search is used
-let _store: ContentStore | null = null;
+// Lazy per-project store cache — no DB overhead unless index/search is used.
+// Keyed by resolved dbPath: multi-project hosts (opencode web serves MANY
+// projects inside ONE process, each plugin tool call arriving with its own
+// projectDir via withProjectDirOverride) get one store per project. A single
+// cached instance would funnel every project's reads/writes into whichever
+// project ran the first ctx_* tool — cross-project knowledge-base exposure
+// AND one long-lived connection whose files other processes' startup
+// cleanups may unlink (surfaces as disk I/O error, SQLITE_IOERR_VNODE).
+// Mirrors the #645 SessionDB singleton re-keying pattern applied to the
+// Pi/OMP/OpenClaw plugins.
+const _stores = new Map<string, ContentStore>();
+/** True once the process-wide startup cleanups have run (see getStore). */
+let _startupCleanupsRan = false;
 
 /**
  * Build the FK-attribution object passed to every ContentStore.index*() call
@@ -500,25 +512,31 @@ export function resolveSessionIdFromSessionDB(opts?: {
 }
 
 /**
- * Auto-index session events files written by SessionStart hook.
- * Scans ~/.claude/context-mode/sessions/ for *-events.md files.
- * CLAUDE_PROJECT_DIR is NOT available to MCP servers — only to hooks —
- * so we glob-scan instead of computing a specific hash.
- * Files are consumed (deleted) after indexing to prevent double-indexing.
- * Called on every getStore() — readdirSync is sub-millisecond when no files match.
+ * Auto-index the CURRENT project's session events file written by the
+ * SessionStart hook (same per-project path derivation the hook uses —
+ * canonical hash + worktree suffix). The file is consumed (deleted) after
+ * indexing to prevent double-indexing. Called on every getStore().
+ *
+ * Scoped to this project deliberately: the events filename is per-project,
+ * and a multi-project host (opencode web) shares one sessions directory
+ * across projects. The previous implementation glob-scanned the whole
+ * directory, so whichever project ran the first ctx_* tool indexed — and
+ * consumed — every OTHER project's pending events into its own store.
  */
 function maybeIndexSessionEvents(store: ContentStore): void {
   try {
     const sessionsDir = getSessionDir();
     if (!existsSync(sessionsDir)) return;
-    const files = readdirSync(sessionsDir).filter(f => f.endsWith("-events.md"));
-    for (const file of files) {
-      const filePath = join(sessionsDir, file);
-      try {
-        store.index({ path: filePath, source: "session-events", attribution: currentAttribution() });
-        unlinkSync(filePath);
-      } catch { /* best-effort per file */ }
-    }
+    const eventsPath = resolveSessionPath({
+      projectDir: getProjectDir(),
+      sessionsDir,
+      ext: "-events.md",
+    });
+    if (!existsSync(eventsPath)) return;
+    try {
+      store.index({ path: eventsPath, source: "session-events", attribution: currentAttribution() });
+      unlinkSync(eventsPath);
+    } catch { /* best-effort */ }
   } catch { /* best-effort — session continuity never blocks tools */ }
 }
 
@@ -699,24 +717,32 @@ function getStorePath(): string {
 }
 
 function getStore(): ContentStore {
-  if (!_store) {
-    // Content DB cleanup on fresh start is handled by SessionStart hook.
-    // Server just opens whatever DB exists (or creates new if hook deleted it).
-    const dbPath = getStorePath();
-    _store = new ContentStore(dbPath);
+  // Opens whatever DB exists (or creates a new one). Routine retention
+  // never deletes per-platform DB FILES — it is row-level only
+  // (cleanupStaleSources below) and on-disk reclamation is ctx_purge's
+  // job (rationale in the startup block below). The only file-deleting
+  // exception is the constructor's corruption-recovery path.
+  const dbPath = getStorePath();
+  let store = _stores.get(dbPath);
+  if (!store) {
+    store = new ContentStore(dbPath);
+    _stores.set(dbPath, store);
 
     // Wire deny-policy hook: store re-checks the Read deny list before
     // re-reading any file_path during auto-refresh. Catches policy edits
-    // made after a file was originally indexed. See #442 round-3.
-    _store.setDenyChecker((filePath: string) => {
+    // made after a file was originally indexed. See #442 round-3. The
+    // project dir is pinned at creation — the store is project-scoped, so
+    // its deny policy stays this project's even when other projects make
+    // calls into the same process.
+    const storeProjectDir = getProjectDir();
+    store.setDenyChecker((filePath: string) => {
       try {
-        const projectDir = getProjectDir();
-        const denyGlobs = readToolDenyPatterns("Read", projectDir);
+        const denyGlobs = readToolDenyPatterns("Read", storeProjectDir);
         const r = evaluateFilePath(
           filePath,
           denyGlobs,
           process.platform === "win32",
-          projectDir,
+          storeProjectDir,
         );
         return r.denied;
       } catch {
@@ -725,21 +751,35 @@ function getStore(): ContentStore {
       }
     });
 
-    // One-time startup cleanup: remove stale content DBs (>14 days)
+    // Per-store: drop this project's sources untouched for 14 days.
     try {
-      const contentDir = dirname(getStorePath());
-      cleanupStaleContentDBs(contentDir, 14);
-      _store.cleanupStaleSources(14);
-      // Also clean legacy shared dir from before platform isolation
-      const legacyDir = join(homedir(), ".context-mode", "content");
-      if (existsSync(legacyDir)) cleanupStaleContentDBs(legacyDir, 0);
+      store.cleanupStaleSources(14);
     } catch { /* best-effort */ }
 
-    // Also clean old PID-based DBs from migration
-    cleanupStaleDBs();
+    // Process-wide, once: sweep the legacy shared content dir (pre-platform-
+    // isolation) and orphaned PID-based tmpdir DBs from the migration. Runs
+    // on FIRST store creation only — not once per project.
+    //
+    // The per-platform content dir gets NO automatic file deletion: mtime
+    // cannot distinguish a long-idle LIVE connection (a web host with a
+    // project open but untouched for weeks) from an abandoned DB, and
+    // unlinking an open store's db/-wal/-shm surfaces as unrecoverable
+    // disk I/O errors (SQLITE_IOERR_VNODE on macOS). Retention inside
+    // each store is handled logically above (cleanupStaleSources);
+    // on-disk reclamation is ctx_purge's job.
+    if (!_startupCleanupsRan) {
+      _startupCleanupsRan = true;
+      try {
+        const legacyDir = join(homedir(), ".context-mode", "content");
+        if (existsSync(legacyDir)) cleanupStaleContentDBs(legacyDir, 0);
+      } catch { /* best-effort */ }
+
+      // Also clean old PID-based DBs from migration
+      cleanupStaleDBs();
+    }
   }
-  maybeIndexSessionEvents(_store);
-  return _store;
+  maybeIndexSessionEvents(store);
+  return store;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -5012,9 +5052,14 @@ EXAMPLE: ctx_purge(confirm: true, scope: "project")`,
     try {
       storePathForPurge = getStorePath();
     } catch { /* best effort — store path may be unresolvable on fresh install */ }
-    if (_store) {
-      try { _store.cleanup(); } catch { /* best effort */ }
-      _store = null;
+    if (storePathForPurge) {
+      // Close ONLY the calling project's store — other projects' stores in a
+      // multi-project host (opencode web) are neither purged nor disturbed.
+      const openStore = _stores.get(storePathForPurge);
+      if (openStore) {
+        try { openStore.cleanup(); } catch { /* best effort */ }
+        _stores.delete(storePathForPurge);
+      }
     }
 
     // FTS5 store: pass contentDir so purgeSession sweeps BOTH canonical
@@ -5329,7 +5374,12 @@ async function main() {
   // Clean up own DB + backgrounded processes + preload script on shutdown
   const shutdown = () => {
     executor.cleanupBackgrounded();
-    if (_store) _store.close(); // persist DB for --continue sessions
+    // Persist every open per-project DB for --continue sessions. Cleared
+    // after close so a repeated shutdown call cannot double-close a store.
+    for (const openStore of _stores.values()) {
+      try { openStore.close(); } catch { /* best effort */ }
+    }
+    _stores.clear();
     try { unlinkSync(CM_FS_PRELOAD); } catch { /* best effort */ }
     // Remove MCP readiness sentinel (#230)
     try { unlinkSync(mcpSentinel); } catch { /* best effort */ }

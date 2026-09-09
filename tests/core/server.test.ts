@@ -2370,8 +2370,8 @@ describe("ctx_purge is the sole reset/wipe mechanism", () => {
     expect(purgeMatch).not.toBeNull();
     const purgeBody = purgeMatch![0];
     // 1. Closes the FTS5 knowledge base BEFORE wiping (releases Windows lock)
-    expect(purgeBody).toContain("_store.cleanup()");
-    expect(purgeBody).toContain("_store = null");
+    expect(purgeBody).toContain("openStore.cleanup()");
+    expect(purgeBody).toContain("_stores.delete(storePathForPurge)");
     // 2. Delegates the on-disk wipe to the purgeSession deep module so all
     //    file-kind sweeps (session DB, events.md, cleanup flag, FTS5 store,
     //    legacy content) flow through ONE code path with uniform dual-hash.
@@ -2624,8 +2624,7 @@ describe("ctx_purge deleted array is honest", () => {
       const idx = push.index!;
       const context = moduleSrc.slice(Math.max(0, idx - 160), idx);
       const isGuarded = /if\s*\(\s*\w*[Ff]ound/.test(context)
-        || /if\s*\(\s*removed\s*\)/.test(context)
-        || /if\s*\(\s*_store\s*\)/.test(context);
+        || /if\s*\(\s*removed\s*\)/.test(context);
       expect(isGuarded, `"${push[1]}" in purge.ts must be guarded by a success check`).toBe(true);
     }
   });
@@ -2854,11 +2853,11 @@ describe("ContentStore purge behavior", () => {
     expect(existsSync(tmpPath)).toBe(false);
   });
 
-  test("ctx_purge handler deletes DB file even when _store is null (--continue scenario)", () => {
+  test("ctx_purge handler deletes DB file even when no store handle is open (--continue scenario)", () => {
     // After the purgeSession() extraction (src/session/purge.ts) the
-    // _store-is-null branch lives there: the handler ALWAYS resolves
+    // no-open-store branch lives there: the handler ALWAYS resolves
     // getStorePath() and passes it as `storePath`, regardless of whether
-    // _store was open.  purgeSession unlinks the file unconditionally,
+    // a store handle was open.  purgeSession unlinks the file unconditionally,
     // which is exactly the --continue scenario this test was created for.
     // Behavioral coverage: tests/session/purge-session.test.ts slice 5.
     const serverSrc = readFileSync(
@@ -2869,10 +2868,10 @@ describe("ContentStore purge behavior", () => {
       /server\.registerTool\(\s*"ctx_purge"[\s\S]*?^\);/m,
     )![0];
 
-    // Handler resolves storePath BEFORE the optional _store.cleanup() so
-    // the disk wipe runs whether _store was open or not.
+    // Handler resolves storePath BEFORE the optional store cleanup so
+    // the disk wipe runs whether a handle was open or not.
     const storePathIdx = purgeBody.indexOf("getStorePath()");
-    const storeCleanupIdx = purgeBody.indexOf("_store.cleanup()");
+    const storeCleanupIdx = purgeBody.indexOf("openStore.cleanup()");
     expect(storePathIdx).toBeGreaterThan(-1);
     expect(storePathIdx).toBeLessThan(storeCleanupIdx === -1 ? Infinity : storeCleanupIdx);
     // Handler always passes storePath into the deep module — that is what

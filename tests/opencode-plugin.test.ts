@@ -249,9 +249,18 @@ describe("ContextModePlugin", () => {
       it("ctx_search coerces JSON-stringified queries array (#621)", async () => {
         const projectDir = join(tempDir, "issue-621-search-coerce");
         const plugin = await createTestPlugin(projectDir);
+        // Seed THIS project's knowledge base first: ctx_search returns an
+        // isError "Knowledge base is empty" guidance (which the plugin
+        // layer throws) when the calling project's store is empty. The
+        // per-project store cache means the earlier batch_execute tests'
+        // output no longer leaks into this project's store.
+        await plugin.tool!.ctx_index.execute(
+          { content: "# seed\n\nseed content for search coercion test", source: "seed-doc" },
+          baseCtx(projectDir),
+        );
         // ctx_search also uses z.preprocess(coerceJsonArray, …) on queries.
-        // Empty knowledge base is fine — we only assert the call returns
-        // without a TypeError (the original symptom).
+        // We only assert the call returns without a TypeError (the original
+        // symptom).
         const result = await plugin.tool!.ctx_search.execute(
           {
             queries: JSON.stringify(["issue621-search"]) as unknown as string[],
@@ -279,6 +288,12 @@ describe("ContextModePlugin", () => {
       it("ctx_search accepts stringified limit (#627 exact reporter case)", async () => {
         const projectDir = join(tempDir, "issue-627-limit-string");
         const plugin = await createTestPlugin(projectDir);
+        // Seed the project's store — see the JSON-stringified queries test
+        // above for why ctx_search needs a non-empty per-project KB.
+        await plugin.tool!.ctx_index.execute(
+          { content: "# seed\n\nseed content for limit coercion test", source: "seed-doc" },
+          baseCtx(projectDir),
+        );
         // Reporter's exact call shape: queries arrives as JSON string AND
         // limit arrives as a number-string. v1.0.140's plain z.number()
         // rejects "4" with "Expected number, received string".
@@ -301,6 +316,12 @@ describe("ContextModePlugin", () => {
       it("ctx_search lifts bare-string queries into single-element array (#627)", async () => {
         const projectDir = join(tempDir, "issue-627-bare-query");
         const plugin = await createTestPlugin(projectDir);
+        // Seed the project's store — see the JSON-stringified queries test
+        // above for why ctx_search needs a non-empty per-project KB.
+        await plugin.tool!.ctx_index.execute(
+          { content: "# seed\n\nseed content for bare query test", source: "seed-doc" },
+          baseCtx(projectDir),
+        );
         // Some LLM providers send a single query as a bare string rather
         // than a JSON-stringified array. Without widening, coerceJsonArray
         // returns the string unchanged → z.array(z.string()) rejects it.

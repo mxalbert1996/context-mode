@@ -201,23 +201,29 @@ export function cleanupStaleDBs(): number {
 }
 
 /**
- * Check if a PID is still alive (not a zombie holding a WAL lock).
- * Returns true if the process exists, false if it's dead.
- */
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Clean up stale per-project content store DBs older than maxAgeDays.
- * Scans the given directory for *.db files and checks mtime.
- * Also detects zombie processes holding WAL locks — if a WAL file exists
- * but the owning PID is dead, the DB files are cleaned up regardless of age.
+ * Scans the given directory for *.db files and unlinks each (plus its
+ * -wal/-shm sidecars) when its EFFECTIVE last-write time — the newer of the
+ * main .db mtime and a non-empty -wal mtime — exceeds the cutoff.
+ *
+ * Why the -wal mtime participates: in WAL mode commits touch only the -wal
+ * file; the main .db mtime advances at checkpoint. A main-only check can
+ * delete an actively-used store that simply hasn't checkpointed within the
+ * window. Conversely, a non-empty -wal older than some threshold is NOT
+ * proof the owning process is dead — a live-but-idle connection (a session
+ * quiet over lunch) is indistinguishable from a crashed process by mtime
+ * alone. The pre-fix heuristic deleted such DBs unconditionally after 1h,
+ * which on macOS unlinks the files under an open connection and surfaces
+ * as disk I/O error (SQLITE_IOERR_VNODE) on every later write — no amount
+ * of retrying recovers an invalidated fd.
+ *
+ * Contract: a -wal can only EXTEND a DB's life (its mtime counts as the
+ * latest write), never shorten it. A WAL never triggers deletion on its
+ * own — the way the old 1-hour zombie rule did — and once the whole DB
+ * (main + non-empty wal) is beyond maxAgeDays, the caller's retention
+ * policy owns the consequences. Callers that cannot tolerate deleting a
+ * possibly-live DB (the per-platform content dir — see getStore() in
+ * src/server.ts) must not call this with a nonzero maxAgeDays.
  */
 export function cleanupStaleContentDBs(contentDir: string, maxAgeDays: number): number {
   let cleaned = 0;
@@ -228,27 +234,18 @@ export function cleanupStaleContentDBs(contentDir: string, maxAgeDays: number): 
     for (const file of files) {
       try {
         const filePath = join(contentDir, file);
-        const mtime = statSync(filePath).mtimeMs;
-        let shouldClean = mtime < cutoff;
-
-        // Detect zombie processes holding WAL locks:
-        // If a WAL file exists, try to read the WAL header to extract the PID.
-        // WAL files from dead processes can block new connections.
-        if (!shouldClean) {
-          const walPath = filePath + "-wal";
-          if (existsSync(walPath)) {
-            try {
-              const walStat = statSync(walPath);
-              // If WAL file is non-empty and DB hasn't been modified in >1 hour,
-              // the owning process may be dead — check via mtime staleness
-              if (walStat.size > 0 && (Date.now() - walStat.mtimeMs) > 3600_000) {
-                shouldClean = true;
-              }
-            } catch { /* ignore WAL check errors */ }
+        // Effective last-write: newer of main .db and non-empty -wal. A fresh
+        // WAL is evidence of a live (or recently-live) connection — it can
+        // only push the cutoff later, never mark a fresh DB stale.
+        let effectiveMs = statSync(filePath).mtimeMs;
+        try {
+          const walStat = statSync(filePath + "-wal");
+          if (walStat.size > 0 && walStat.mtimeMs > effectiveMs) {
+            effectiveMs = walStat.mtimeMs;
           }
-        }
+        } catch { /* no -wal — main mtime stands */ }
 
-        if (shouldClean) {
+        if (effectiveMs < cutoff) {
           for (const suffix of ["", "-wal", "-shm"]) {
             try { unlinkSync(filePath + suffix); } catch { /* ignore */ }
           }

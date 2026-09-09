@@ -24,6 +24,7 @@ import "../setup-home";
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
@@ -36,6 +37,28 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Kill any fake-server children still running under this test's scratch dir
+  // before removing it. Several respawn-regression tests deliberately drop the
+  // client's child reference (simulating a crash); rmSync alone leaves those
+  // children running forever as launchd-reparented orphans (observed: leaked
+  // `bun introspect-respawn.mjs` processes accumulating per suite run).
+  // Matching on the unique mkdtemp path never touches unrelated processes.
+  try {
+    const ps = execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
+    for (const line of ps.split("\n")) {
+      if (!line.includes(scratch)) continue;
+      const pid = Number.parseInt(line.trim(), 10);
+      if (Number.isInteger(pid) && pid !== process.pid) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* already dead */
+        }
+      }
+    }
+  } catch {
+    /* best effort — ps unavailable */
+  }
   try {
     rmSync(scratch, { recursive: true, force: true });
   } catch {

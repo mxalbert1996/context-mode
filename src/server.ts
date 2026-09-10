@@ -741,7 +741,7 @@ function getStore(): ContentStore {
         const r = evaluateFilePath(
           filePath,
           denyGlobs,
-          process.platform === "win32",
+          undefined,
           storeProjectDir,
         );
         return r.denied;
@@ -1253,7 +1253,7 @@ function checkFilePathDenyPolicy(
     const result = evaluateFilePath(
       filePath,
       denyGlobs,
-      process.platform === "win32",
+      undefined,
       projectDir,
     );
     if (result.denied) {
@@ -2397,10 +2397,9 @@ EXAMPLE: ctx_index(path: "/path/to/large-spec.md", source: "openapi-v2-spec")`,
         const store = getStore();
         const projectDir = getProjectDir();
         const denyGlobs = readToolDenyPatterns("Read", projectDir);
-        const isWin32 = process.platform === "win32";
         const perFileDeny = (absPath: string): boolean => {
           try {
-            return evaluateFilePath(absPath, denyGlobs, isWin32, projectDir).denied;
+            return evaluateFilePath(absPath, denyGlobs, undefined, projectDir).denied;
           } catch {
             return false; // fail-open consistent with checkFilePathDenyPolicy
           }

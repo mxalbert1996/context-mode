@@ -7,7 +7,7 @@
 
 import { describe, test, beforeAll, afterAll } from "vitest";
 import { strict as assert } from "node:assert";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, symlinkSync, realpathSync, mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir, homedir } from "node:os";
 
@@ -589,6 +589,17 @@ describe("evaluateFilePath", () => {
     assert.equal(result.matchedPattern, "**/.env");
   });
 
+  test("evaluateFilePath: Windows UNC rule matches UNC candidate", () => {
+    if (process.platform !== "win32") return;
+    const result = evaluateFilePath(
+      "\\\\server\\share\\x",
+      [["//server/share/**"]],
+      true,
+    );
+    assert.equal(result.denied, true);
+    assert.equal(result.matchedPattern, "//server/share/**");
+  });
+
   test("evaluateFilePath: traversal does not bypass absolute deny glob when projectRoot is supplied", () => {
     // An absolute deny rule for ~/.ssh/** should still match when the caller
     // passes a ../-traversal relative path that resolves into ~/.ssh.
@@ -606,17 +617,110 @@ describe("evaluateFilePath", () => {
     assert.equal(result.matchedPattern, denyGlob);
   });
 
-  test("evaluateFilePath: without projectRoot, absolute deny glob is still bypassable (regression guard)", () => {
-    // Documents the pre-fix behavior: without projectRoot, `..` is not
-    // resolved, so the raw string doesn't match the absolute glob.
-    // This test exists so any change in behavior is intentional.
-    const absoluteSshGlob = resolve(homedir(), ".ssh").replace(/\\/g, "/") + "/**";
+  test("evaluateFilePath: ~ in deny glob expands to home", () => {
     const result = evaluateFilePath(
-      "../../.ssh/id_rsa",
-      [[absoluteSshGlob]],
-      process.platform === "win32",
+      join(homedir(), ".ssh", "id_rsa"),
+      [["~/.ssh/**"]],
+      false,
     );
-    assert.equal(result.denied, false);
+    assert.equal(result.denied, true);
+    assert.equal(result.matchedPattern, "~/.ssh/**");
+  });
+
+  test("evaluateFilePath: ~ in file path expands to home", () => {
+    const absoluteGlob = resolve(homedir(), ".ssh").replace(/\\/g, "/") + "/**";
+    const result = evaluateFilePath("~/.ssh/id_rsa", [[absoluteGlob]], false);
+    assert.equal(result.denied, true);
+  });
+
+  test("evaluateFilePath: deny glob traversing a symlink matches the real target", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "ctx-rule-symlink-")));
+    try {
+      mkdirSync(join(base, "real"), { recursive: true });
+      writeFileSync(join(base, "real", "secret.env"), "TOKEN=1\n");
+      const link = join(base, "link");
+      try {
+        symlinkSync(join(base, "real"), link);
+      } catch {
+        return; // Symlinks can fail on restricted CI (esp. Windows) — skip.
+      }
+      const glob = link.replace(/\\/g, "/") + "/**";
+      const result = evaluateFilePath(
+        join(base, "real", "secret.env"),
+        [[glob]],
+        process.platform === "win32",
+      );
+      assert.equal(result.denied, true);
+      assert.equal(result.matchedPattern, glob);
+    } finally {
+      try { rmSync(base, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  test("evaluateFilePath: file side symlink resolved without projectRoot (CVE-2025-59829)", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "ctx-file-symlink-")));
+    try {
+      mkdirSync(join(base, "real"), { recursive: true });
+      writeFileSync(join(base, "real", "secret.env"), "TOKEN=1\n");
+      const link = join(base, "link");
+      try {
+        symlinkSync(join(base, "real"), link);
+      } catch {
+        return; // Symlinks can fail on restricted CI (esp. Windows) — skip.
+      }
+      const glob = join(base, "real").replace(/\\/g, "/") + "/**";
+      const file = join(link, "secret.env");
+      const result = evaluateFilePath(
+        file,
+        [[glob]],
+        process.platform === "win32",
+      );
+      assert.equal(result.denied, true);
+    } finally {
+      try { rmSync(base, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  test("evaluateFilePath: // absolute anchor matches", () => {
+    if (process.platform === "win32") return; // `//` is a POSIX-root anchor.
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "ctx-rule-anchor-")));
+    try {
+      writeFileSync(join(base, "secret.env"), "TOKEN=1\n");
+      const glob = "//" + base.replace(/\\/g, "/").slice(1) + "/**";
+      const result = evaluateFilePath(join(base, "secret.env"), [[glob]], false);
+      assert.equal(result.denied, true);
+    } finally {
+      try { rmSync(base, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  test("evaluateFilePath: without projectRoot, cwd anchoring + canonicalization still enforce absolute deny globs", () => {
+    // INTENTIONAL BEHAVIOR CHANGE (fixes the symlink-bypass class,
+    // CVE-2025-59829): without projectRoot the path is now cwd-anchored and
+    // symlink-canonicalized, so a file reached through a symlink is denied by
+    // an absolute deny glob for its real target. Kept cwd-independent via a
+    // temp-dir symlink structure.
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "ctx-noproj-symlink-")));
+    try {
+      mkdirSync(join(base, "real"), { recursive: true });
+      writeFileSync(join(base, "real", "secret.env"), "TOKEN=1\n");
+      const link = join(base, "link");
+      try {
+        symlinkSync(join(base, "real"), link);
+      } catch {
+        return; // Symlinks can fail on restricted CI (esp. Windows) — skip.
+      }
+      const glob = join(base, "real").replace(/\\/g, "/") + "/**";
+      const result = evaluateFilePath(
+        join(link, "secret.env"),
+        [[glob]],
+        process.platform === "win32",
+      );
+      assert.equal(result.denied, true);
+      assert.equal(result.matchedPattern, glob);
+    } finally {
+      try { rmSync(base, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
   });
 });
 

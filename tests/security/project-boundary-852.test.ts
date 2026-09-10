@@ -16,7 +16,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, test } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -99,6 +99,15 @@ describe("isPathInsideProject — issue #852 containment", () => {
     // permissions.allow mechanism Claude Code uses — not a context-mode env.
     const allowGlobs = [[join(outside, "**")]];
     const v = evaluateProjectContainment(join(outside, "secret.txt"), project, allowGlobs);
+    expect(v).toEqual({ allowed: true, reason: "allow-rule" });
+  });
+
+  it("containment ALLOWS an out-of-project path matched by a ~-anchored allow rule", () => {
+    const v = evaluateProjectContainment(
+      join(homedir(), ".ssh", "config"),
+      project,
+      [["~/.ssh/**"]],
+    );
     expect(v).toEqual({ allowed: true, reason: "allow-rule" });
   });
 

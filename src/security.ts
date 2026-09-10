@@ -1,4 +1,5 @@
 import { readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { relative, resolve, sep } from "node:path";
 
 import { resolveAdapterGlobalSettingsPaths } from "./util/claude-config.js";
@@ -592,21 +593,78 @@ export function evaluateCommandDenyOnly(
 // ==============================================================================
 
 /**
+ * Expand a leading `~` / `~/` (or `~\` on Windows) to the user's home
+ * directory, mirroring Claude Code's documented `~/path` rule anchor.
+ * `~user/...` is intentionally left unchanged (needs a passwd lookup that is
+ * not portable). Returns the input unchanged when there is nothing to expand.
+ */
+function expandHomeTilde(path: string): string {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/") || path.startsWith("~\\")) return homedir() + path.slice(1);
+  return path;
+}
+
+/**
+ * Claude Code's `//path` rule anchor means "absolute from the filesystem
+ * root". Collapse the leading double slash to one so the pattern can match
+ * the absolute candidates this module produces (`path.resolve` never emits a
+ * leading `//`). Patterns without the anchor are returned unchanged.
+ */
+function normalizeRuleAnchor(glob: string): string {
+  return glob.startsWith("//") ? glob.slice(1) : glob;
+}
+
+/**
+ * Best-effort symlink-resolved twin of a permission glob. Only the longest
+ * static prefix (path segments before the first `*`/`?` segment) is passed
+ * through `realpathSync`; glob segments are re-appended untouched. Returns
+ * null when there is no static prefix or it does not exist, so callers can
+ * simply fall back to the literal pattern.
+ */
+function canonicalizeGlob(glob: string): string | null {
+  const segments = glob.split(/[\\/]/);
+  let cut = segments.findIndex((s) => s.includes("*") || s.includes("?"));
+  if (cut === -1) cut = segments.length;
+  if (cut === 0) return null;
+  const prefix = segments.slice(0, cut).join(sep);
+  if (prefix.length === 0) return null;
+  try {
+    return [realpathSync(prefix), ...segments.slice(cut)].join(sep);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Check if a file path should be denied based on deny globs.
  *
  * Normalizes backslashes to forward slashes before matching so that
  * Windows paths work with Unix-style glob patterns.
  *
- * When `projectRoot` is supplied, the path is also matched in its
- * fully-resolved absolute form **and** — when the file exists — in
- * its canonical form (`fs.realpathSync`). This prevents two classes
- * of bypass:
+ * Rule and file path anchors are expanded before matching:
+ *   - A leading `~` / `~/` in EITHER the rule glob or the file path is
+ *     expanded to the user's home directory (Claude Code's `~/path`
+ *     anchor). `~user/...` is left untouched.
+ *   - A rule glob beginning with `//` is treated as "absolute from the
+ *     filesystem root" and has the leading double slash collapsed to one,
+ *     matching the absolute candidates this module produces. The literal
+ *     double-slash form is preserved as an additional variant so Windows UNC
+ *     rules (e.g. `//server/share/**`) still match UNC candidates, which
+ *     normalize to `//server/share/...`.
  *
- *   1. `..` traversal: a relative path like `../../.ssh/id_rsa` no
- *      longer evades absolute-path deny rules.
- *   2. Symlink escape: a project-local path whose realpath points
- *      outside the project (e.g. `safe.log -> ~/.ssh/id_rsa`) no
- *      longer evades absolute-path deny rules.
+ * Symlink resolution is mirrored on both sides. For each rule glob the
+ * matcher tests its literal variant AND a best-effort `realpathSync`'d
+ * variant (only the static prefix, before the first glob segment, is
+ * canonicalized). Against those it tests every file candidate: the raw
+ * input, the tilde-expanded input, the path resolved against `projectRoot`
+ * (or `process.cwd()` when no project root is supplied), and — when the
+ * file exists — its canonical form. A deny match therefore fires if ANY
+ * literal/canonical rule variant matches ANY literal/lexical/canonical file
+ * candidate, closing the CVE-2025-59829 symlink deny-bypass class.
+ *
+ * Anchoring the resolved candidate to `projectRoot` (falling back to cwd)
+ * means absolute deny rules still match relative `..` traversal even when
+ * the caller does not know the project root.
  *
  * realpath is best-effort: if the file does not exist yet (ENOENT)
  * or the syscall fails for any reason, the lexical resolved form is
@@ -621,32 +679,56 @@ export function evaluateFilePath(
 ): { denied: boolean; matchedPattern?: string } {
   const toForward = (path: string): string => path.replace(/\\/g, "/");
 
-  // Match against the raw input, the lexically-resolved absolute path,
-  // and the canonical (symlink-resolved) path when the file exists.
-  // Deduplicated so absolute inputs and paths that don't cross symlinks
-  // don't pay the matching cost multiple times.
+  // File-side candidates: raw, tilde-expanded, anchored-resolved, canonical.
   const candidates = new Set<string>();
   candidates.add(toForward(filePath));
-  if (projectRoot) {
-    const lexical = resolve(projectRoot, filePath);
-    candidates.add(toForward(lexical));
-    try {
-      candidates.add(toForward(realpathSync(lexical)));
-    } catch {
-      // File does not exist yet, or realpath failed — rely on lexical form.
-    }
+
+  const expandedFilePath = expandHomeTilde(filePath);
+  if (expandedFilePath !== filePath) {
+    candidates.add(toForward(expandedFilePath));
+  }
+
+  const lexical = resolve(projectRoot ?? process.cwd(), expandedFilePath);
+  candidates.add(toForward(lexical));
+  try {
+    candidates.add(toForward(realpathSync(lexical)));
+  } catch {
+    // File does not exist yet, or realpath failed — rely on lexical form.
   }
 
   for (const globs of denyGlobs) {
     for (const glob of globs) {
+      // Rule-side variants: the literal glob (`//` intact, so Windows UNC
+      // rules still match UNC candidates), its `//`-collapsed root-absolute
+      // anchor form, the `~`-expanded form of each, and a best-effort
+      // symlink-resolved twin of every variant. Matching all of them against
+      // every candidate keeps both sides symmetric.
+      const anchors = new Set<string>();
+      anchors.add(glob);
+      anchors.add(normalizeRuleAnchor(glob));
+      const expandedGlob = expandHomeTilde(glob);
+      if (expandedGlob !== glob) {
+        anchors.add(expandedGlob);
+        anchors.add(normalizeRuleAnchor(expandedGlob));
+      }
+
+      const variants = new Set<string>();
+      for (const variant of anchors) {
+        variants.add(variant);
+        const canonical = canonicalizeGlob(variant);
+        if (canonical !== null) variants.add(canonical);
+      }
+
       // Normalize the glob's path separators the same way candidates were
       // normalized — otherwise a Windows absolute deny rule like
       // `Read(C:\Users\...\secret.env)` parses with literal backslashes that
       // never match a forward-slash candidate.
-      const regex = fileGlobToRegex(toForward(glob), caseInsensitive);
-      for (const candidate of candidates) {
-        if (regex.test(candidate)) {
-          return { denied: true, matchedPattern: glob };
+      for (const variant of variants) {
+        const regex = fileGlobToRegex(toForward(variant), caseInsensitive);
+        for (const candidate of candidates) {
+          if (regex.test(candidate)) {
+            return { denied: true, matchedPattern: glob };
+          }
         }
       }
     }
@@ -679,6 +761,8 @@ export function evaluateFilePath(
  *
  * A path equal to the project root itself counts as inside. Comparison is
  * case-insensitive on Windows/macOS to match those filesystems' semantics.
+ * A leading `~` in `filePath` is expanded to the user's home directory for
+ * consistency with `evaluateFilePath`.
  *
  * Returns `true` when `projectRoot` is falsy (no boundary to enforce) so the
  * caller's fail-open posture is preserved when the root cannot be resolved.
@@ -691,7 +775,7 @@ export function isPathInsideProject(
   if (!projectRoot) return true;
 
   const root = resolve(projectRoot);
-  const lexical = resolve(projectRoot, filePath);
+  const lexical = resolve(projectRoot, expandHomeTilde(filePath));
 
   const within = (root: string, candidate: string): boolean => {
     let a = root;

@@ -1043,7 +1043,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       // Check file path against Read deny patterns
       const filePath = toolInput.path ?? "";
       const denyGlobs = security.readToolDenyPatterns("Read", projectDir, platformSettingsPath);
-      const evalResult = security.evaluateFilePath(filePath, denyGlobs);
+      const evalResult = security.evaluateFilePath(filePath, denyGlobs, undefined, projectDir);
       if (evalResult.denied) {
         return { action: "deny", reason: `Blocked by security policy: file path matches Read deny pattern ${evalResult.matchedPattern}` };
       }

@@ -516,7 +516,7 @@ function defaultSourceForPath(absPath: string): string {
 
 function assertReadAllowed(path: string, projectDir: string): void {
   const denyGlobs = readToolDenyPatterns("Read", projectDir);
-  const denied = evaluateFilePath(path, denyGlobs, process.platform === "win32", projectDir);
+  const denied = evaluateFilePath(path, denyGlobs, undefined, projectDir);
   if (denied.denied) {
     throw new Error(`Read denied by policy: ${path}`);
   }
@@ -558,7 +558,7 @@ async function indexCommand(argv: string[]): Promise<number> {
           followSymlinks: boolFlag(parsed.flags, "follow-symlinks"),
           perFileDeny: (filePath) => {
             try {
-              return evaluateFilePath(filePath, denyGlobs, process.platform === "win32", projectDir).denied;
+              return evaluateFilePath(filePath, denyGlobs, undefined, projectDir).denied;
             } catch {
               return false;
             }

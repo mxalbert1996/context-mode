@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 import { resolveAdapterGlobalSettingsPaths } from "./util/claude-config.js";
 
@@ -423,6 +423,18 @@ export function readToolDenyPatterns(
  * needs an out-of-project read expresses it once, in the host config, e.g.
  * `"permissions": { "allow": ["Read(/var/log/**)"] }`, and both the host and
  * context-mode honor it.
+ *
+ * Settings-source anchor (`/{path}`): per Claude Code's documented permission
+ * semantics, a rule glob with a SINGLE leading slash is NOT rooted at the
+ * filesystem root — it is anchored at the directory of the settings file that
+ * declared it. Project/local settings (`.claude/settings.json`,
+ * `.claude/settings.local.json`) therefore anchor at the primary working
+ * directory (`projectDir`), while user settings (`~/.claude/settings.json`),
+ * adapter-global settings, and a custom `--settings <file>` anchor at that
+ * settings file's own directory. Each such glob is emitted as a settings-source
+ * RESOLVED twin in addition to the literal glob — the change is additive: no
+ * existing literal match is removed, so the README's `Read(/var/log/**)`
+ * filesystem-root escape hatch keeps working as a literal absolute rule.
  */
 export function readToolPermissionPatterns(
   toolName: string,
@@ -432,7 +444,7 @@ export function readToolPermissionPatterns(
 ): string[][] {
   const result: string[][] = [];
 
-  const extractGlobs = (path: string): string[] | null => {
+  const extractGlobs = (path: string, baseDir?: string): string[] | null => {
     let raw: string;
     try {
       raw = readFileSync(path, "utf-8");
@@ -456,6 +468,13 @@ export function readToolPermissionPatterns(
       const tp = parseToolPattern(entry);
       if (tp && tp.tool === toolName) {
         globs.push(tp.glob);
+        // `/{path}` settings-source anchor: emit the settings-file-relative
+        // resolved twin alongside the literal glob (additive — the literal
+        // stays so filesystem-root rules like `Read(/var/log/**)` keep
+        // working). `//path` is the filesystem-root anchor and gets no twin.
+        if (baseDir && tp.glob.startsWith("/") && !tp.glob.startsWith("//")) {
+          globs.push(resolve(baseDir, "." + tp.glob));
+        }
       }
     }
     return globs;
@@ -464,11 +483,13 @@ export function readToolPermissionPatterns(
   if (projectDir) {
     const localGlobs = extractGlobs(
       resolve(projectDir, ".claude", "settings.local.json"),
+      projectDir,
     );
     if (localGlobs !== null) result.push(localGlobs);
 
     const sharedGlobs = extractGlobs(
       resolve(projectDir, ".claude", "settings.json"),
+      projectDir,
     );
     if (sharedGlobs !== null) result.push(sharedGlobs);
   }
@@ -483,7 +504,7 @@ export function readToolPermissionPatterns(
       : resolveAdapterGlobalSettingsPaths();
 
   for (const globalPath of globalPaths) {
-    const globalGlobs = extractGlobs(globalPath);
+    const globalGlobs = extractGlobs(globalPath, dirname(globalPath));
     if (globalGlobs !== null) result.push(globalGlobs);
   }
 
@@ -666,6 +687,12 @@ function canonicalizeGlob(glob: string): string | null {
  * means absolute deny rules still match relative `..` traversal even when
  * the caller does not know the project root.
  *
+ * Conversely, a RELATIVE rule glob (no leading `/`, `//`, or `~`) is anchored
+ * to the current directory at match time — `projectRoot` when supplied, else
+ * `process.cwd()` — per the host's "relative to current directory" semantics.
+ * The literal glob is kept as well, so both a relative access path and an
+ * absolute one are matched.
+ *
  * realpath is best-effort: if the file does not exist yet (ENOENT)
  * or the syscall fails for any reason, the lexical resolved form is
  * still checked. This keeps the function usable for paths that will
@@ -710,6 +737,13 @@ export function evaluateFilePath(
       if (expandedGlob !== glob) {
         anchors.add(expandedGlob);
         anchors.add(normalizeRuleAnchor(expandedGlob));
+      }
+
+      // Match-time cwd anchor for relative rules (host: "relative to current
+      // directory"). `**/...` rules already reached absolute candidates; bare
+      // `secret/**`, `.env`, `credentials*` did not without this twin.
+      if (!isAbsolute(glob) && !glob.startsWith("~")) {
+        anchors.add(resolve(projectRoot ?? process.cwd(), glob));
       }
 
       const variants = new Set<string>();

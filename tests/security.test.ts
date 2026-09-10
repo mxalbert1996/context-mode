@@ -519,6 +519,90 @@ describe("readToolDenyPatterns", () => {
   });
 });
 
+describe("settings-source anchors", () => {
+  const norm = (p: string): string => p.replace(/\\/g, "/");
+  let base: string;
+  let projectDir: string;
+  let rootAnchorDir: string;
+  let cfgDir: string;
+  let cfgSettingsPath: string;
+  let missingGlobal: string;
+
+  beforeAll(() => {
+    base = realpathSync(mkdtempSync(join(tmpdir(), "ctx-settings-anchor-")));
+    projectDir = join(base, "project");
+    rootAnchorDir = join(base, "root-anchor-project");
+    cfgDir = join(base, "cfg");
+    cfgSettingsPath = join(cfgDir, "settings.json");
+    missingGlobal = join(base, "does-not-exist", "settings.json");
+
+    const projectClaude = join(projectDir, ".claude");
+    mkdirSync(projectClaude, { recursive: true });
+    writeFileSync(
+      join(projectClaude, "settings.json"),
+      JSON.stringify({ permissions: { deny: ["Read(/secret/**)"] } }),
+    );
+
+    const rootAnchorClaude = join(rootAnchorDir, ".claude");
+    mkdirSync(rootAnchorClaude, { recursive: true });
+    writeFileSync(
+      join(rootAnchorClaude, "settings.json"),
+      JSON.stringify({ permissions: { deny: ["Read(//root/secret/**)"] } }),
+    );
+
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(
+      cfgSettingsPath,
+      JSON.stringify({ permissions: { deny: ["Read(/logs/**)"] } }),
+    );
+  });
+
+  afterAll(() => {
+    try { rmSync(base, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  test("project settings /secret/** gains a projectDir-resolved twin", () => {
+    const result = readToolDenyPatterns("Read", projectDir, missingGlobal);
+    const globs = result.flat();
+    assert.ok(globs.includes("/secret/**"), "literal glob preserved");
+    assert.ok(
+      globs.includes(norm(resolve(projectDir, "./secret/**"))),
+      "settings-source twin emitted",
+    );
+  });
+
+  test("global settings /logs/** anchors at the settings file's directory", () => {
+    const result = readToolDenyPatterns("Read", undefined, cfgSettingsPath);
+    const globs = result.flat();
+    assert.ok(globs.includes("/logs/**"), "literal glob preserved");
+    assert.ok(
+      globs.includes(norm(resolve(cfgDir, "./logs/**"))),
+      "settings-file-relative twin emitted",
+    );
+  });
+
+  test("//root anchor gets no settings-source twin", () => {
+    const result = readToolDenyPatterns("Read", rootAnchorDir, missingGlobal);
+    const globs = result.flat();
+    assert.ok(globs.includes("//root/secret/**"), "literal glob preserved");
+    assert.ok(
+      !globs.includes(norm(resolve(rootAnchorDir, ".//root/secret/**"))),
+      "filesystem-root anchor must not gain a settings twin",
+    );
+  });
+
+  test("oracle repro: absolute path under project is denied by /secret/** rule", () => {
+    const denyGlobs = readToolDenyPatterns("Read", projectDir, missingGlobal);
+    const result = evaluateFilePath(
+      join(projectDir, "secret", "x"),
+      denyGlobs,
+      false,
+      projectDir,
+    );
+    assert.equal(result.denied, true);
+  });
+});
+
 describe("File Glob Matching", () => {
   test("fileGlobToRegex: '.env' matches exactly '.env'", () => {
     assert.ok(fileGlobToRegex(".env").test(".env"));
@@ -721,6 +805,41 @@ describe("evaluateFilePath", () => {
     } finally {
       try { rmSync(base, { recursive: true, force: true }); } catch { /* ignore */ }
     }
+  });
+
+  test("evaluateFilePath: absolute path denied by bare relative glob (match-time cwd anchor)", () => {
+    const projectRoot = resolve(tmpdir(), "ctx-relative-anchor-project");
+    const result = evaluateFilePath(
+      join(projectRoot, "secret", "x.env"),
+      [["secret/**"]],
+      false,
+      projectRoot,
+    );
+    assert.equal(result.denied, true);
+    assert.equal(result.matchedPattern, "secret/**");
+  });
+
+  test("evaluateFilePath: absolute .env denied by bare relative rule", () => {
+    const projectRoot = resolve(tmpdir(), "ctx-relative-env-project");
+    const result = evaluateFilePath(
+      join(projectRoot, ".env"),
+      [[".env"]],
+      false,
+      projectRoot,
+    );
+    assert.equal(result.denied, true);
+  });
+
+  test("evaluateFilePath: relative rule anchors at project root, not other dir", () => {
+    const projectRoot = resolve(tmpdir(), "ctx-relative-anchor-root");
+    const otherDir = resolve(tmpdir(), "ctx-relative-anchor-other");
+    const result = evaluateFilePath(
+      join(otherDir, "secret", "x.env"),
+      [["secret/**"]],
+      false,
+      projectRoot,
+    );
+    assert.equal(result.denied, false);
   });
 });
 

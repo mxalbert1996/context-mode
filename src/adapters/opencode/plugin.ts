@@ -10,7 +10,7 @@
  *     entrypoint it supports. No `tui` marker is set (it would invalidate
  *     server loading per the v2 migration guide).
  *
- * The v2 PluginContext surface is VERIFIED (opencode2 beta-19135 live probe
+ * The v2 PluginContext surface is VERIFIED (live probe
  * + docs at opencode.ai/v2/docs/build/plugins): ctx.tool.transform(editor)
  * registers native ctx_* tools (ToolEditor), ctx.tool.hook
  * ("execute.before"/"execute.after") bridges routing enforcement + capture,
@@ -1594,6 +1594,18 @@ async function registerEventBusV2(
   const handler = (raw: unknown) => {
     if (rt.closed) return Promise.resolve(); // torn down — silent no-op
     const ev = (raw ?? {}) as Record<string, any>;
+    // OpenCode 2 publishes per-turn usage on `session.usage.updated`
+    // ({ data: { sessionID, cost, tokens } }). Map it onto the shared v1
+    // path so token/cost capture keeps working.
+    if (ev.type === "session.usage.updated" && ev.data && typeof ev.data === "object") {
+      const data = ev.data as Record<string, any>;
+      return handlers.event({
+        event: {
+          type: "message.updated",
+          properties: { info: { ...data, role: typeof data.role === "string" ? data.role : "assistant" } },
+        },
+      });
+    }
     // Generic mapping: the shared handler filters by type and reads
     // properties defensively — a shape it does not understand is a no-op.
     return handlers.event({ event: { type: ev.type, properties: ev.properties ?? ev } });
@@ -1632,8 +1644,8 @@ async function registerEventBusV2(
 
 /**
  * OPTIONAL: register the v2 permission "evaluate" hook — the surface that
- * restores true ask/confirmation semantics on OpenCode v2 (verified against
- * opencode2 beta-19135 live probe; see .research/opencode-v2-permission-hooks.md).
+ * restores true ask/confirmation semantics on OpenCode v2 (verified via live
+ * probe; see .research/opencode-v2-permission-hooks.md).
  *
  * The host asserts every core-tool action (shell, read, …) through its
  * permission system before execution and lets the hook MUTATE the decision

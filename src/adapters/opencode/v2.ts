@@ -5,8 +5,8 @@
  * plugin.ts (which owns the shared v1 handlers, the v2 registration/
  * bridging functions, setupV2, and the hybrid activation guard):
  *   - the host-client log types (shared by the v1 and v2 logging paths)
- *   - the VERIFIED v2 setup-context surface types (opencode2 beta-19135
- *     live probe + docs build/plugins)
+ *   - the VERIFIED v2 setup-context surface types (live probe + docs
+ *     build/plugins)
  *   - the Zod → JSON-Schema converter feeding ToolInfo.input
  *   - defensive field readers for the UNCONFIRMED v2 hook payload shapes
  *
@@ -42,7 +42,7 @@ export type PluginClient = {
 // ── Verified v2 setup-context surface ─────────────────────
 
 /**
- * VERIFIED against opencode2 beta-19135 (live probe) + the v2 plugin docs
+ * VERIFIED against opencode 2 (live probe) + the v2 plugin docs
  * (opencode.ai/v2/docs/build/plugins):
  *   ctx.tool  { reload, transform, hook }
  *   ctx.session { hook, create, get, prompt, interrupt, rename, context, … }
@@ -90,7 +90,7 @@ export type V2SetupContext = {
     subscribe?: (options?: { signal?: AbortSignal }) => unknown;
   };
   /**
-   * v2 permission domain (verified against opencode2 beta-19135 live probe:
+   * v2 permission domain (verified against opencode 2 live probe:
    * ctx.permission.hook("evaluate", cb) fires for every core-tool permission
    * assert with a MUTABLE event { action, resources, source?, effect, message? }
    * — hook mutations of effect/message win the decision). Optional: older v2

@@ -2678,6 +2678,8 @@ const TOOL_NAME_NORMALIZE: Record<string, string> = {
   view: "Read",
   grep: "Grep",
   fetch: "WebFetch",
+  read: "Read", // OpenCode 2 stable core tool name (lowercase)
+  write: "Write", // OpenCode 2 stable core tool name (lowercase)
   // Codex CLI
   shell: "Bash",
   shell_command: "Bash",

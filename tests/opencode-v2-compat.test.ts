@@ -2,8 +2,8 @@ import { fakeHome } from "./setup-home";
 /**
  * Tests for opencode v1/v2 dual-flavor plugin compatibility.
  *
- * The v2 fake host here implements the VERIFIED v2 API (opencode2
- * beta-19135 live probe + docs build/plugins):
+ * The v2 fake host here implements the VERIFIED v2 API (live probe
+ * + docs build/plugins):
  *   ctx.tool.transform(editor)      — ToolEditor {list,get,namespace,add,update,remove}
  *   ctx.tool.hook("execute.before"|"execute.after", cb)
  *   ctx.session.hook("context"|"prompt", cb)
@@ -705,6 +705,64 @@ describe("opencode v2 compatibility", () => {
       await sleep(40);
       expect(countViaReader()).toBe(usageCountBefore);
       reader.close();
+    });
+
+    it("execute.after captures LOWERCASE OpenCode 2 stable core tool names (read/write)", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "bridge-after-lowercase");
+      const host = makeV2Ctx(projectDir);
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => void;
+
+      const after = host.toolHooks.get("execute.after") as any;
+      expect(after).toBeTypeOf("function");
+
+      await after({
+        status: "completed",
+        tool: "read",
+        sessionID: "v2-lower-sess",
+        input: { path: "/src/lower.ts" },
+        result: { content: [{ type: "text", text: "export default {}" }] },
+      });
+      await after({
+        status: "completed",
+        tool: "write",
+        sessionID: "v2-lower-sess",
+        input: { path: "/src/lower.ts", content: "export default {}" },
+        result: { content: "Wrote file" },
+      });
+
+      const inst = mockState.instances.at(-1);
+      const events = inst.getEvents("v2-lower-sess") as any[];
+      expect(events.some((e: any) => e.type === "file_read")).toBe(true);
+      expect(events.some((e: any) => e.type === "file_write")).toBe(true);
+
+      cleanup?.();
+    });
+
+    it("event bus maps OpenCode 2 stable session.usage.updated to an agent_usage event", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "bridge-usage-stable");
+      const host = makeV2Ctx(projectDir, { withEventBus: true });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => Promise<void>;
+
+      host.pushEvent({
+        type: "session.usage.updated",
+        data: {
+          sessionID: "v2-usage-sess",
+          cost: 0.25,
+          tokens: { input: 10, output: 5, reasoning: 2, cache: { read: 3, write: 1 } },
+        },
+      });
+
+      const inst = mockState.instances.at(-1);
+      await vi.waitFor(() => {
+        const events = inst.getEvents("v2-usage-sess") as any[];
+        expect(events.some((e: any) => e.type === "agent_usage")).toBe(true);
+      });
+
+      await cleanup();
     });
   });
 

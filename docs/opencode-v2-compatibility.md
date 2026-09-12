@@ -19,7 +19,7 @@ plugin invalid for server loading).
 
 ## How opencode v2 loads the plugin
 
-Verified against opencode 2.0 preview (`v0.0.0-beta-19135`):
+Verified against opencode 2:
 
 - **Config sources**: the server reads plugin entries from `opencode.json`
   (project or global) under both `plugin` and `plugins` keys. The global
@@ -49,8 +49,8 @@ calls:
   `experimental.session.compacting`, and `experimental.chat.system.transform`
   hooks.
 - **v2 hosts** call `setup(ctx)`. `setup` **probes capabilities at runtime**
-  and registers only what the host actually exposes. Verified against the
-  opencode 2 preview (`v0.0.0-beta-19135`):
+  and registers only what the host actually exposes. Verified against
+  opencode 2:
 
 | v1 behavior | v2 surface used | Mandatory? |
 |---|---|---|
@@ -59,7 +59,17 @@ calls:
 | system transform / routing block / resume injection | `ctx.session.hook("context")` (mutable `system: [{type:"text", text}]` parts) — also runs for continuations and compaction | no (degrades) |
 | `chat.message` (prompt capture) | `ctx.session.hook("prompt")` (`event.prompt.text`) | no (degrades) |
 | `event` capture | `ctx.event.subscribe()` (async iterable) | no (degrades) |
-| `ctx.client.app.log` | none — v2 `app` exposes only `name`/`version`/`channel`; logs fall back to stderr | — |
+| `ctx.client.app.log` | none — v2 `app` exposes only `name`/`version`/`channel`; logs go to the plugin sink (`<data>/opencode/log/context-mode.log`), stderr as last resort | — |
+
+### OpenCode 2 stable specifics (verified on 2.0.2)
+
+- Per-turn usage is published on `session.usage.updated`
+  (`{ sessionID, cost, tokens: { input, output, reasoning, cache } }`); the
+  event pump maps it onto the shared v1 usage path, so token/cost capture
+  stays active on stable hosts.
+- v2 core tool names are lowercase (`read`, `write`, …); the capture path
+  normalizes them to the v1-cased names so `file_read` / `file_write` events
+  are still recorded.
 
 Unavailable optional behaviors are logged **once** at setup and are not faked.
 On a v2 host missing a mandatory surface (tool transform or execute hooks),
@@ -121,7 +131,9 @@ failure or database corruption (upstream issues #992, #880, #905; PRs #1030,
 - **Detailed error logging**: previously-silent database failures (schema
   init/migration, read paths that return empty results) now log to stderr as
   `[context-mode:db] <op> [<code>]: <message>`. Identical errors are deduped to
-  once per ~30 seconds. Plugin hook errors log via `client.app.log` when
-  available with a stderr fallback (never stdout), with the same dedupe.
+  once per ~30 seconds. Plugin hook errors are written to the plugin sink
+  (`<data>/opencode/log/context-mode.log`), with `client.app.log` kept in
+  parallel when the host exposes it; stderr is the last-resort fallback
+  (never stdout), with the same dedupe.
 
 Set `OPENCODE_DEBUG=1` for full stack traces in both the plugin and DB logs.

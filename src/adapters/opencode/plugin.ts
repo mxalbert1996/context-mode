@@ -1613,6 +1613,20 @@ async function registerSessionPromptV2(
   const sessionHook =
     ctx?.session && typeof ctx.session.hook === "function" ? ctx.session.hook : undefined;
   if (!sessionHook) return { ok: false };
+  // The v2 "prompt" hook is documented at-least-once (retry-safe, not
+  // exactly-once): the same logical prompt can be delivered twice. Dedupe on
+  // `${sessionId}:${messageID}`, FIFO-evicting beyond the cap so a long-lived
+  // session cannot grow the closure-local set without bound.
+  const SEEN_PROMPTS_CAP = 256;
+  const seenPrompts = new Set<string>();
+  const rememberPrompt = (key: string): void => {
+    seenPrompts.add(key);
+    while (seenPrompts.size > SEEN_PROMPTS_CAP) {
+      const oldest = seenPrompts.values().next().value;
+      if (typeof oldest !== "string") break;
+      seenPrompts.delete(oldest);
+    }
+  };
   const handler = async (event: unknown) => {
     if (rt.closed) return undefined; // torn down — silent no-op
     const ev = (event ?? {}) as Record<string, any>;
@@ -1621,10 +1635,23 @@ async function registerSessionPromptV2(
     if (typeof text !== "string" || text.length === 0) return undefined;
     const sessionId = v2SessionIdOf(ev);
     if (!sessionId) return undefined; // cannot attribute capture — honest no-op
+    // Canonical id first; fall back to the legacy metadata field. No id →
+    // preserve today's behavior (capture; the DB text-window dedupe applies).
+    const messageID =
+      typeof ev.messageID === "string"
+        ? ev.messageID
+        : typeof ev.metadata?.messageID === "string"
+          ? ev.metadata.messageID
+          : undefined;
+    if (messageID !== undefined) {
+      const captureKey = `${sessionId}:${messageID}`;
+      if (seenPrompts.has(captureKey)) return undefined; // at-least-once redelivery — skip duplicate capture
+      rememberPrompt(captureKey);
+    }
     const v1Input = {
       sessionID: sessionId,
       agent: typeof ev.agent === "string" ? ev.agent : undefined,
-      messageID: typeof ev.metadata?.messageID === "string" ? ev.metadata.messageID : undefined,
+      messageID,
     } as unknown as ChatMessageHookInput;
     const v1Output = {
       message: prompt ?? {},

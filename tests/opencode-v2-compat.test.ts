@@ -869,6 +869,170 @@ describe("opencode v2 compatibility", () => {
       cleanup?.();
     });
 
+    it("prompt hook dedupes a repeated delivery by canonical messageID", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "bridge-prompt-idem");
+      mkdirSync(projectDir, { recursive: true });
+      const host = makeV2Ctx(projectDir, { withSession: true });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => void;
+      const promptHook = host.sessionHooks.get("prompt") as any;
+
+      // Distinct text so only the messageID key (not the DB text-window
+      // dedupe) can collapse the two deliveries.
+      await promptHook({
+        sessionID: "v2-prompt-idem-sess",
+        messageID: "msg_retry_1",
+        prompt: { text: "retry delivery one" },
+        metadata: {},
+      });
+      await promptHook({
+        sessionID: "v2-prompt-idem-sess",
+        messageID: "msg_retry_1",
+        prompt: { text: "retry delivery two" },
+        metadata: {},
+      });
+
+      const inst = mockState.instances.at(-1);
+      const userPrompts = (inst.getEvents("v2-prompt-idem-sess") as any[]).filter(
+        (e: any) => e.type === "user_prompt",
+      );
+      expect(userPrompts).toHaveLength(1);
+
+      cleanup?.();
+    });
+
+    it("prompt hook falls back to metadata.messageID for dedupe", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "bridge-prompt-meta-id");
+      mkdirSync(projectDir, { recursive: true });
+      const host = makeV2Ctx(projectDir, { withSession: true });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => void;
+      const promptHook = host.sessionHooks.get("prompt") as any;
+
+      await promptHook({
+        sessionID: "v2-prompt-meta-sess",
+        prompt: { text: "legacy id delivery one" },
+        metadata: { messageID: "msg_meta_1" },
+      });
+      await promptHook({
+        sessionID: "v2-prompt-meta-sess",
+        prompt: { text: "legacy id delivery two" },
+        metadata: { messageID: "msg_meta_1" },
+      });
+
+      const inst = mockState.instances.at(-1);
+      const userPrompts = (inst.getEvents("v2-prompt-meta-sess") as any[]).filter(
+        (e: any) => e.type === "user_prompt",
+      );
+      expect(userPrompts).toHaveLength(1);
+
+      cleanup?.();
+    });
+
+    it("prompt hook captures distinct messageIDs in the same session separately", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "bridge-prompt-distinct");
+      mkdirSync(projectDir, { recursive: true });
+      const host = makeV2Ctx(projectDir, { withSession: true });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => void;
+      const promptHook = host.sessionHooks.get("prompt") as any;
+
+      await promptHook({
+        sessionID: "v2-prompt-distinct-sess",
+        messageID: "msg_a",
+        prompt: { text: "first distinct prompt" },
+        metadata: {},
+      });
+      await promptHook({
+        sessionID: "v2-prompt-distinct-sess",
+        messageID: "msg_b",
+        prompt: { text: "second distinct prompt" },
+        metadata: {},
+      });
+
+      const inst = mockState.instances.at(-1);
+      const userPrompts = (inst.getEvents("v2-prompt-distinct-sess") as any[]).filter(
+        (e: any) => e.type === "user_prompt",
+      );
+      expect(userPrompts).toHaveLength(2);
+
+      cleanup?.();
+    });
+
+    it("prompt hook without a messageID preserves capture on every delivery", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "bridge-prompt-noid");
+      mkdirSync(projectDir, { recursive: true });
+      const host = makeV2Ctx(projectDir, { withSession: true });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => void;
+      const promptHook = host.sessionHooks.get("prompt") as any;
+
+      await promptHook({
+        sessionID: "v2-prompt-noid-sess",
+        prompt: { text: "unkeyed prompt one" },
+        metadata: {},
+      });
+      await promptHook({
+        sessionID: "v2-prompt-noid-sess",
+        prompt: { text: "unkeyed prompt two" },
+        metadata: {},
+      });
+
+      const inst = mockState.instances.at(-1);
+      const userPrompts = (inst.getEvents("v2-prompt-noid-sess") as any[]).filter(
+        (e: any) => e.type === "user_prompt",
+      );
+      expect(userPrompts).toHaveLength(2);
+
+      cleanup?.();
+    });
+
+    it("prompt hook does not mutate the event payload", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "bridge-prompt-nomut");
+      mkdirSync(projectDir, { recursive: true });
+      const host = makeV2Ctx(projectDir, { withSession: true });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => void;
+      const promptHook = host.sessionHooks.get("prompt") as any;
+
+      const files = { nested: { deep: true } };
+      const prompt = { text: "immutable prompt body", files, agents: ["a"], skills: ["b"] };
+      const metadata = { messageID: "msg_nomut" };
+      const ev = {
+        sessionID: "v2-prompt-nomut-sess",
+        messageID: "msg_nomut",
+        prompt,
+        metadata,
+        delivery: "user",
+      };
+
+      await promptHook(ev);
+
+      expect(ev.prompt).toBe(prompt);
+      expect(ev.prompt.text).toBe("immutable prompt body");
+      expect(ev.prompt.files).toBe(files);
+      expect(ev.prompt.agents).toEqual(["a"]);
+      expect(ev.prompt.skills).toEqual(["b"]);
+      expect(ev.metadata).toBe(metadata);
+      expect(ev.delivery).toBe("user");
+      expect(ev).not.toHaveProperty("result");
+      expect(ev.prompt).not.toHaveProperty("result");
+      expect(Object.keys(ev).sort()).toEqual([
+        "delivery",
+        "messageID",
+        "metadata",
+        "prompt",
+        "sessionID",
+      ]);
+
+      cleanup?.();
+    });
+
     it("event subscription feeds the shared handler (usage capture) and stops on cleanup", async () => {
       const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
       const projectDir = join(tempDir, "bridge-event-bus");

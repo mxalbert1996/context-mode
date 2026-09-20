@@ -81,6 +81,12 @@ export type V2SetupContext = {
     reload?: (...args: unknown[]) => unknown;
     transform?: (cb: (editor: V2ToolEditor) => unknown) => unknown;
     hook?: (name: string, cb: (event: unknown) => unknown) => unknown;
+    /**
+     * The tools registered AFTER all transforms, each with an effective `id`.
+     * Added in opencode >= 2.0.11; ABSENT on older v2 hosts — probe
+     * defensively and never assume it exists.
+     */
+    list?: () => Promise<unknown>;
   };
   session?: {
     hook?: (name: string, cb: (event: unknown) => unknown) => unknown;

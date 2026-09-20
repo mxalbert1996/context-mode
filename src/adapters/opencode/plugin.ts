@@ -1319,6 +1319,12 @@ type V2RegisterOutcome = {
   ok: boolean;
   /** Unregister handle(s) for what was actually registered (may be absent). */
   dispose?: V2Dispose;
+  /**
+   * Effective tool ids (post-transform names) the registration expected to
+   * expose. No namespace is applied, so id === registered `name`. Used by
+   * confirmNativeToolsListed() as a post-transform presence check.
+   */
+  expectedToolIds?: string[];
 };
 
 /** Normalize an unconfirmed host return value into a dispose handle. */
@@ -1909,7 +1915,7 @@ async function registerNativeToolsV2(
 
   // Single transform callback registers every tool; the returned
   // Registration is captured as the dispose handle for teardown.
-  return tryRegister(transformFn, ctx?.tool, (editor: V2ToolEditor) => {
+  const outcome = await tryRegister(transformFn, ctx?.tool, (editor: V2ToolEditor) => {
     const add = typeof editor?.add === "function" ? editor.add : undefined;
     if (typeof add !== "function") {
       throw new Error("v2 ToolEditor.add unavailable");
@@ -1918,6 +1924,88 @@ async function registerNativeToolsV2(
       add.call(editor, info);
     }
   });
+  // No namespace is applied above, so each tool's EFFECTIVE id equals its
+  // registered `name` — derive the expected ids from the same infos used for
+  // editor.add() (never a hard-coded name/count).
+  return { ...outcome, expectedToolIds: infos.map((info) => info.name) };
+}
+
+/**
+ * Independent post-transform confirmation that the ctx_* tools are actually
+ * present by EFFECTIVE id. opencode >= 2.0.11 exposes ctx.tool.list(), which
+ * returns the tools registered after all transforms — a host that silently
+ * dropped or renamed our editor.add() entries would otherwise leave us
+ * claiming a native surface that is not reachable (and suppressing the MCP
+ * fallback).
+ *
+ * FAIL-CLOSED ONLY on a definitive listing: when the surface is absent (older
+ * hosts), the call throws, or the shape is unrecognizable, nothing can be
+ * disproven → preserve current behavior ({ ok: true }). A successful listing
+ * that lacks any expected id → { ok: false, missing }.
+ *
+ * This is an effective-NAME confirmation, not cryptographic ownership — it
+ * proves an id is registered, never that this plugin owns it.
+ */
+async function confirmNativeToolsListed(
+  ctx: V2SetupContext | undefined,
+  expectedIds: string[] | undefined,
+): Promise<{ ok: true } | { ok: false; missing: string[] }> {
+  const listFn = ctx?.tool?.list;
+  if (typeof listFn !== "function") return { ok: true };
+
+  let listed: unknown;
+  try {
+    listed = await listFn.call(ctx?.tool);
+  } catch {
+    logOnceImpl(
+      getPluginGlobalState(),
+      ctx,
+      "v2-tool-list-probe-failed",
+      "context-mode v2: ctx.tool.list() probe threw — cannot independently confirm native tool ids; retaining current activation behavior",
+      "warn",
+    );
+    return { ok: true };
+  }
+  if (!Array.isArray(listed)) {
+    logOnceImpl(
+      getPluginGlobalState(),
+      ctx,
+      "v2-tool-list-probe-shape",
+      "context-mode v2: ctx.tool.list() returned an unrecognized shape — cannot independently confirm native tool ids; retaining current activation behavior",
+      "warn",
+    );
+    return { ok: true };
+  }
+
+  const present = new Set<string>();
+  for (const entry of listed) {
+    if (typeof entry === "string") {
+      present.add(entry);
+      continue;
+    }
+    if (entry !== null && typeof entry === "object") {
+      const id = (entry as Record<string, unknown>).id;
+      if (typeof id === "string") {
+        present.add(id);
+        continue;
+      }
+    }
+    // A single malformed entry means the listing cannot be treated as a
+    // definitive enumeration of effective ids: fail open (retain current
+    // behavior) rather than build a partial `present` set and fail closed.
+    logOnceImpl(
+      getPluginGlobalState(),
+      ctx,
+      "v2-tool-list-probe-entries",
+      "context-mode v2: ctx.tool.list() returned an entry with an unrecognized shape — cannot independently confirm native tool ids; retaining current activation behavior",
+      "warn",
+    );
+    return { ok: true };
+  }
+
+  if (!expectedIds || expectedIds.length === 0) return { ok: true };
+  const missing = expectedIds.filter((id) => !present.has(id));
+  return missing.length > 0 ? { ok: false, missing } : { ok: true };
 }
 
 /**
@@ -2147,6 +2235,19 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
       return;
     }
     disposes.push(...toolRegs.disposes);
+
+    // Independent confirmation that the tools we just registered are present
+    // by effective id on hosts exposing ctx.tool.list() (>= 2.0.11). A
+    // DEFINITIVE listing that lacks/renames an expected id means the native
+    // surface is NOT reachable → do not claim (keep the MCP fallback and let
+    // the v1 entry claim instead). Hosts without the surface are unaffected.
+    const toolListing = await confirmNativeToolsListed(ctx, nativeReg.expectedToolIds);
+    if (!toolListing.ok) {
+      await failSetup(
+        `context-mode v2 setup: native tool registration unconfirmed — ctx.tool.list() is missing expected effective tool id(s): ${toolListing.missing.join(", ")} — activation not claimed so the v1 entry can still claim; ctx_* tools remain available via the MCP fallback (mcp.context-mode)`,
+      );
+      return;
+    }
 
     // Full mandatory surface acquired — the claim is now real.
     state.activations.set(projectKey, {

@@ -93,6 +93,13 @@ function makeV2Ctx(
     withSession?: boolean;
     withEventBus?: boolean;
     withPermission?: boolean;
+    /** Omit ctx.tool.list entirely (host < 2.0.11) — confirmation is skipped. */
+    omitToolList?: boolean;
+    /**
+     * Post-filter what ctx.tool.list() reports. May return a malformed or
+     * non-array payload to exercise shape handling.
+     */
+    listTransform?: (listed: Array<{ id: string }>) => unknown;
   } = {},
 ) {
   const logs = opts.log ?? [];
@@ -172,6 +179,14 @@ function makeV2Ctx(
       };
     } else {
       ctx.tool.hook = opts.hookImpl;
+    }
+    if (!opts.omitToolList) {
+      // Host >= 2.0.11: tools registered AFTER all transforms, each with an
+      // effective id. No namespace is applied by the plugin → id === name.
+      ctx.tool.list = async () => {
+        const listed = [...addedTools.values()].map((t: any) => ({ ...t, id: t.name }));
+        return opts.listTransform ? opts.listTransform(listed) : listed;
+      };
     }
   }
   if (opts.withSession) {
@@ -1297,6 +1312,156 @@ describe("opencode v2 compatibility", () => {
       expect(degradeSpy).toHaveBeenCalledWith("preCompact");
 
       degradeSpy.mockRestore();
+      await cleanup();
+    });
+  });
+
+  // ── ctx.tool.list() post-transform confirmation (host >= 2.0.11) ──
+
+  describe("native tool listing confirmation (ctx.tool.list)", () => {
+    it("complete listing → setup claims and native routing is enabled", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "list-confirm-complete");
+      const host = makeV2Ctx(projectDir);
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => Promise<void>;
+      expect(typeof cleanup).toBe("function");
+      expect(host.addedTools.size).toBeGreaterThan(0);
+      expect([...host.toolHooks.keys()].sort()).toEqual(["execute.after", "execute.before"]);
+
+      const registry = await getActivationRegistry();
+      const keys = [...registry.keys()].filter((k) => k.includes("list-confirm-complete"));
+      expect(keys).toHaveLength(1);
+      expect(registry.get(keys[0])?.flavor).toBe("v2");
+      expect(registry.get(keys[0])?.nativeToolsConfirmed).toBe(true);
+
+      await cleanup();
+    });
+
+    it("listing missing an expected effective id → does NOT claim, tears down registrations, MCP fallback kept", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const routing = await import("../../hooks/core/routing.mjs");
+      const projectDir = join(tempDir, "list-missing-id");
+      const logs: LogEntry[] = [];
+      const host = makeV2Ctx(projectDir, {
+        log: logs,
+        listTransform: (listed) => listed.filter((t) => t.id !== "ctx_stats"),
+      });
+
+      const result = await ContextModeSetup(host.ctx as any);
+
+      // No claim: the host reported a listing that definitively lacks ctx_stats.
+      expect(result).toBeUndefined();
+      const registry = await getActivationRegistry();
+      expect([...registry.keys()].filter((k) => k.includes("list-missing-id"))).toHaveLength(0);
+      // Registrations torn down (native tools + execute hooks).
+      expect(host.addedTools.size).toBe(0);
+      expect(host.toolHooks.size).toBe(0);
+      // Routing availability signal back to its default (no native claimant).
+      expect(routing.isContextModeToolsAvailable()).toBe(false);
+      // Honest failure log names the missing effective id and keeps the fallback.
+      const failure = logs.find((l) => /native tool registration unconfirmed/.test(l.message ?? ""));
+      expect(failure).toBeDefined();
+      expect(failure?.message).toContain("ctx_stats");
+      expect(failure?.message).toContain("activation not claimed");
+      expect(failure?.message).toContain("MCP fallback (mcp.context-mode)");
+    });
+
+    it("empty array listing → definitive, does NOT claim (fails closed on missing ids)", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "list-empty-array");
+      const host = makeV2Ctx(projectDir, { listTransform: () => [] });
+
+      const result = await ContextModeSetup(host.ctx as any);
+
+      expect(result).toBeUndefined();
+      const registry = await getActivationRegistry();
+      expect([...registry.keys()].filter((k) => k.includes("list-empty-array"))).toHaveLength(0);
+      expect(host.addedTools.size).toBe(0);
+      expect(host.toolHooks.size).toBe(0);
+    });
+
+    it("ctx.tool.list absent (host < 2.0.11) → behavior unchanged, setup still claims", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "list-absent");
+      const host = makeV2Ctx(projectDir, { omitToolList: true });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => Promise<void>;
+      expect(typeof cleanup).toBe("function");
+      expect(host.addedTools.size).toBeGreaterThan(0);
+
+      const registry = await getActivationRegistry();
+      const keys = [...registry.keys()].filter((k) => k.includes("list-absent"));
+      expect(keys).toHaveLength(1);
+      expect(registry.get(keys[0])?.nativeToolsConfirmed).toBe(true);
+
+      await cleanup();
+    });
+
+    it("ctx.tool.list that throws → does NOT fail (claims)", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "list-probe-unusable");
+      const host = makeV2Ctx(projectDir, {
+        listTransform: () => {
+          throw new Error("list exploded");
+        },
+      });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => Promise<void>;
+      expect(typeof cleanup).toBe("function");
+
+      const registry = await getActivationRegistry();
+      const keys = [...registry.keys()].filter((k) => k.includes("list-probe-unusable"));
+      expect(keys).toHaveLength(1);
+      expect(registry.get(keys[0])?.nativeToolsConfirmed).toBe(true);
+
+      await cleanup();
+    });
+
+    it("ctx.tool.list returns a non-array → claims, with a one-time warning", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "list-non-array");
+      const logs: LogEntry[] = [];
+      const host = makeV2Ctx(projectDir, {
+        log: logs,
+        listTransform: () => ({ not: "an array" }),
+      });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => Promise<void>;
+      expect(typeof cleanup).toBe("function");
+
+      const registry = await getActivationRegistry();
+      const keys = [...registry.keys()].filter((k) => k.includes("list-non-array"));
+      expect(keys).toHaveLength(1);
+      expect(registry.get(keys[0])?.nativeToolsConfirmed).toBe(true);
+
+      expect(logs.some((l) => /unrecognized shape/.test(l.message ?? ""))).toBe(true);
+
+      await cleanup();
+    });
+
+    it("ctx.tool.list returns a malformed entry array → claims, with a one-time warning", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "list-malformed-entries");
+      const logs: LogEntry[] = [];
+      const host = makeV2Ctx(projectDir, {
+        log: logs,
+        listTransform: () => [{ name: "ctx_stats" }, { id: 42 }, "ctx_tools"],
+      });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => Promise<void>;
+      expect(typeof cleanup).toBe("function");
+      expect(host.addedTools.size).toBeGreaterThan(0);
+
+      const registry = await getActivationRegistry();
+      const keys = [...registry.keys()].filter((k) => k.includes("list-malformed-entries"));
+      expect(keys).toHaveLength(1);
+      expect(registry.get(keys[0])?.nativeToolsConfirmed).toBe(true);
+
+      const warning = logs.find((l) => /unrecognized shape/.test(l.message ?? ""));
+      expect(warning).toBeDefined();
+      expect(warning?.message).toMatch(/entry with an unrecognized shape/);
+
       await cleanup();
     });
   });

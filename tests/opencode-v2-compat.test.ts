@@ -613,6 +613,221 @@ describe("opencode v2 compatibility", () => {
       cleanup?.();
     });
 
+    it("session compaction hook persists a resume snapshot + increments compact count (no result/system/messages mutation)", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "bridge-session-compaction");
+      mkdirSync(projectDir, { recursive: true });
+      const host = makeV2Ctx(projectDir, { withSession: true });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => void;
+      const compactionHook = host.sessionHooks.get("compaction") as any;
+      expect(compactionHook).toBeTypeOf("function");
+
+      // Seed events for the session through the live runtime (capture path).
+      const after = host.toolHooks.get("execute.after") as any;
+      await after({
+        status: "completed",
+        tool: "Read",
+        sessionID: "v2-compact-sess",
+        input: { file_path: "/src/compact.ts" },
+        result: { content: "export default 1" },
+      });
+
+      const inst = mockState.instances.at(-1);
+      expect((inst.getEvents("v2-compact-sess") as any[]).length).toBeGreaterThan(0);
+      expect(inst.getResume("v2-compact-sess")).toBeNull();
+
+      const event: Record<string, any> = {
+        sessionID: "v2-compact-sess",
+        system: [{ type: "text", text: "SYSTEM" }],
+        messages: [{ role: "user", content: "hi" }],
+      };
+      const systemRef = event.system;
+      const messagesRef = event.messages;
+      const beforeJson = JSON.stringify(event);
+
+      const ret = await compactionHook(event);
+
+      expect(ret).toBeUndefined();
+      expect(event.result).toBeUndefined();
+      // JSON equality alone would not catch an added `result: undefined` key —
+      // assert the property is genuinely absent (non-mutation contract).
+      expect(Object.hasOwn(event, "result")).toBe(false);
+      expect(event.system).toBe(systemRef);
+      expect(event.messages).toBe(messagesRef);
+      expect(JSON.stringify(event)).toBe(beforeJson);
+
+      const resume = inst.getResume("v2-compact-sess");
+      expect(resume).not.toBeNull();
+      expect(String(resume.snapshot).length).toBeGreaterThan(0);
+      expect(inst.getSessionStats("v2-compact-sess").compact_count).toBe(1);
+
+      cleanup?.();
+    });
+
+    it("v2 compaction persistence is idempotent: a double-fired hook with unchanged events writes the resume once and bumps compact_count to 1", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "bridge-compaction-dedupe");
+      mkdirSync(projectDir, { recursive: true });
+      const host = makeV2Ctx(projectDir, { withSession: true });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => void;
+      const compactionHook = host.sessionHooks.get("compaction") as any;
+
+      const after = host.toolHooks.get("execute.after") as any;
+      await after({
+        status: "completed",
+        tool: "Read",
+        sessionID: "v2-compact-dedupe",
+        input: { file_path: "/src/dedupe.ts" },
+        result: { content: "export default 1" },
+      });
+
+      const inst = mockState.instances.at(-1);
+      const upsertSpy = vi.spyOn(inst, "upsertResume");
+      const incrementSpy = vi.spyOn(inst, "incrementCompactCount");
+
+      // One logical compaction on v2.0.11 invokes the hook twice.
+      await compactionHook({ sessionID: "v2-compact-dedupe" });
+      await compactionHook({ sessionID: "v2-compact-dedupe" });
+
+      expect(upsertSpy).toHaveBeenCalledTimes(1);
+      expect(incrementSpy).toHaveBeenCalledTimes(1);
+      expect(inst.getSessionStats("v2-compact-dedupe").compact_count).toBe(1);
+      const resume = inst.getResume("v2-compact-dedupe");
+      expect(resume).not.toBeNull();
+      expect(String(resume.snapshot).length).toBeGreaterThan(0);
+
+      cleanup?.();
+    });
+
+    it("v2 compaction re-persists a fresh snapshot when a NEW event arrives between invocations", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "bridge-compaction-new-event");
+      mkdirSync(projectDir, { recursive: true });
+      const host = makeV2Ctx(projectDir, { withSession: true });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => void;
+      const compactionHook = host.sessionHooks.get("compaction") as any;
+      const after = host.toolHooks.get("execute.after") as any;
+
+      await after({
+        status: "completed",
+        tool: "Read",
+        sessionID: "v2-compact-new-event",
+        input: { file_path: "/src/first.ts" },
+        result: { content: "export default 1" },
+      });
+
+      const inst = mockState.instances.at(-1);
+      const upsertSpy = vi.spyOn(inst, "upsertResume");
+
+      await compactionHook({ sessionID: "v2-compact-new-event" });
+      const firstResume = inst.getResume("v2-compact-new-event");
+      expect(inst.getSessionStats("v2-compact-new-event").compact_count).toBe(1);
+
+      // New captured event → event count changed → dedupe must NOT reuse.
+      await after({
+        status: "completed",
+        tool: "Read",
+        sessionID: "v2-compact-new-event",
+        input: { file_path: "/src/second.ts" },
+        result: { content: "export default 2" },
+      });
+      await compactionHook({ sessionID: "v2-compact-new-event" });
+
+      const secondResume = inst.getResume("v2-compact-new-event");
+      expect(upsertSpy).toHaveBeenCalledTimes(2);
+      expect(inst.getSessionStats("v2-compact-new-event").compact_count).toBe(2);
+      expect(secondResume).not.toBeNull();
+      expect(secondResume.event_count).toBeGreaterThan(firstResume.event_count);
+      expect(secondResume.snapshot).not.toBe(firstResume.snapshot);
+
+      cleanup?.();
+    });
+
+    it("v2 compaction re-persists when the event source changes but the event COUNT is unchanged", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "bridge-compaction-fingerprint");
+      mkdirSync(projectDir, { recursive: true });
+      const host = makeV2Ctx(projectDir, { withSession: true });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => void;
+      const compactionHook = host.sessionHooks.get("compaction") as any;
+      const after = host.toolHooks.get("execute.after") as any;
+
+      await after({
+        status: "completed",
+        tool: "Read",
+        sessionID: "v2-compact-fp",
+        input: { file_path: "/src/first.ts" },
+        result: { content: "export default 1" },
+      });
+
+      const inst = mockState.instances.at(-1);
+      const upsertSpy = vi.spyOn(inst, "upsertResume");
+
+      await compactionHook({ sessionID: "v2-compact-fp" });
+      expect(inst.getSessionStats("v2-compact-fp").compact_count).toBe(1);
+
+      // Same event COUNT, different source content: the last event's id and
+      // data_hash differ (models the 1000-event cap FIFO-evicting the oldest
+      // while the length stays constant). A count-based dedupe would have
+      // served the stale snapshot; the fingerprint must fall through.
+      const original = inst.getEvents("v2-compact-fp") as any[];
+      const changed = original.map((e, i) =>
+        i === original.length - 1 ? { ...e, id: e.id + 1000, data_hash: "changed-fp-hash" } : e,
+      );
+      vi.spyOn(inst, "getEvents").mockReturnValue(changed as any);
+
+      await compactionHook({ sessionID: "v2-compact-fp" });
+
+      expect(upsertSpy).toHaveBeenCalledTimes(2);
+      expect(inst.getSessionStats("v2-compact-fp").compact_count).toBe(2);
+      const resume = inst.getResume("v2-compact-fp");
+      expect(resume).not.toBeNull();
+      expect(String(resume.snapshot).length).toBeGreaterThan(0);
+
+      cleanup?.();
+    });
+
+    it("v2 compaction with no captured events creates no resume row and leaves compact_count at 0", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "bridge-compaction-empty");
+      mkdirSync(projectDir, { recursive: true });
+      const host = makeV2Ctx(projectDir, { withSession: true });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => void;
+      const compactionHook = host.sessionHooks.get("compaction") as any;
+
+      await compactionHook({ sessionID: "v2-compact-empty" });
+      await compactionHook({ sessionID: "v2-compact-empty" });
+
+      const inst = mockState.instances.at(-1);
+      expect(inst.getResume("v2-compact-empty")).toBeNull();
+      expect(inst.getSessionStats("v2-compact-empty").compact_count).toBe(0);
+
+      cleanup?.();
+    });
+
+    it("compaction handler is a silent no-op after teardown and tolerates a missing session id", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "bridge-session-compaction-teardown");
+      const host = makeV2Ctx(projectDir, { withSession: true });
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => Promise<void>;
+      const compactionHook = host.sessionHooks.get("compaction") as any;
+
+      const inst = mockState.instances.at(-1);
+      const ensureSpy = vi.spyOn(inst, "ensureSession");
+      await expect(compactionHook({})).resolves.toBeUndefined();
+      expect(ensureSpy).not.toHaveBeenCalled();
+
+      await cleanup();
+      await expect(compactionHook({ sessionID: "stale-compaction-sess" })).resolves.toBeUndefined();
+      expect(ensureSpy).not.toHaveBeenCalled();
+    });
+
     it("session prompt hook captures user prompt text as a user_prompt event", async () => {
       const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
       const projectDir = join(tempDir, "bridge-prompt");
@@ -1039,6 +1254,50 @@ describe("opencode v2 compatibility", () => {
         /session context injection unavailable \(no ctx\.session\.hook\('context'\)\)/.test(l.message ?? ""),
       );
       expect(sessionCtxLogs.length).toBe(1); // logged once, not once per project
+    });
+
+    it("preCompact tracks the compaction registration: degraded without a session surface, kept when registered", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const { OpenCodeAdapter } = await import("../src/adapters/opencode/index.js");
+
+      // Constructor default (no preCompactDegraded option) still claims it.
+      expect(new OpenCodeAdapter("opencode").capabilities.preCompact).toBe(true);
+
+      const degradeSpy = vi.spyOn(OpenCodeAdapter.prototype, "markCapabilityDegraded");
+
+      const noSession = makeV2Ctx(join(tempDir, "probe-precompact-missing"));
+      (await ContextModeSetup(noSession.ctx as any))?.();
+      expect(degradeSpy).toHaveBeenCalledWith("preCompact");
+      degradeSpy.mockClear();
+
+      const withSession = makeV2Ctx(join(tempDir, "probe-precompact-present"), { withSession: true });
+      (await ContextModeSetup(withSession.ctx as any))?.();
+      expect(withSession.sessionHooks.has("compaction")).toBe(true);
+      expect(degradeSpy).not.toHaveBeenCalledWith("preCompact");
+
+      degradeSpy.mockRestore();
+    });
+
+    it("compaction hook registration rejection reports preCompact as degraded", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const { OpenCodeAdapter } = await import("../src/adapters/opencode/index.js");
+      const degradeSpy = vi.spyOn(OpenCodeAdapter.prototype, "markCapabilityDegraded");
+
+      const projectDir = join(tempDir, "probe-compaction-reg-fail");
+      const host = makeV2Ctx(projectDir, { withSession: true });
+      // The session surface exists and other hooks register; only the
+      // "compaction" registration is rejected by the host.
+      (host.ctx as any).session.hook = async (name: string) => {
+        if (name === "compaction") throw new Error("host rejected compaction registration");
+        return () => {};
+      };
+
+      const cleanup = (await ContextModeSetup(host.ctx as any)) as () => Promise<void>;
+      expect(typeof cleanup).toBe("function");
+      expect(degradeSpy).toHaveBeenCalledWith("preCompact");
+
+      degradeSpy.mockRestore();
+      await cleanup();
     });
   });
 

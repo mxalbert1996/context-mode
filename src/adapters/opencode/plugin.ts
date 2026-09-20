@@ -14,8 +14,11 @@
  * + docs at opencode.ai/v2/docs/build/plugins): ctx.tool.transform(editor)
  * registers native ctx_* tools (ToolEditor), ctx.tool.hook
  * ("execute.before"/"execute.after") bridges routing enforcement + capture,
- * ctx.session.hook("context"|"prompt") covers system-context injection
- * (continuations AND compaction) and user-prompt capture, and
+ * ctx.session.hook("context") covers system-context injection (routing block
+ * + cross-session resume) for primary agent requests and tool continuations,
+ * ctx.session.hook("prompt") covers user-prompt capture,
+ * ctx.session.hook("compaction") persists the deterministic resume snapshot
+ * (leaving the host's transcript-aware summary untouched), and
  * ctx.event.subscribe() streams bus events. The v2 `setup` path probes each
  * surface defensively (typeof checks; UNCONFIRMED payload fields are read
  * defensively) and degrades HONESTLY — one-time log, never fake success.
@@ -54,6 +57,7 @@ import { dirname, resolve, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 
 import { resolveSessionDbPath, SessionDB } from "../../session/db.js";
 import { extractEvents, extractUserEvents, parseOpencodeUsage, buildAgentUsageEvent } from "../../session/extract.js";
@@ -951,10 +955,79 @@ interface SharedHandlers {
   chatMessage: (input: ChatMessageHookInput, output: ChatMessageHookOutput) => Promise<void>;
   sessionCompacting: (input: CompactingHookInput, output: CompactingHookOutput) => Promise<string>;
   chatSystemTransform: (input: SystemTransformHookInput, output: SystemTransformHookOutput) => Promise<void>;
+  /**
+   * Persistence-only compaction core shared by the v1 PreCompact handler and
+   * the additive v2 compaction bridge. Returns the snapshot plus the events
+   * it was built from (v1 auto-injection reuses them), or empty when the
+   * session has no events. May throw — the caller owns error handling so it
+   * can log against the hook name it was invoked through.
+   *
+   * `opts.dedupe` (v2 only): reuse an existing unconsumed resume row when the
+   * stored source fingerprint matches the current ordered event set, so a
+   * double-fired compaction hook cannot double-write the snapshot or
+   * double-increment compact_count.
+   */
+  persistCompactionSnapshot: (
+    sessionId: string,
+    opts?: { dedupe?: boolean },
+  ) => Promise<{ snapshot: string; events: SessionEvent[] }>;
+}
+
+/**
+ * Deterministic fingerprint of the ORDERED captured events. Compaction dedupe
+ * compares this against the stored resume row's source_hash so a changed event
+ * set is detected even when the row count is unchanged.
+ */
+function fingerprintEvents(events: ReadonlyArray<{ id: number; data_hash: string }>): string {
+  return createHash("sha256")
+    .update(events.map((e) => `${e.id}:${e.data_hash}`).join("\n"))
+    .digest("hex");
 }
 
 function createSharedHandlers(rt: PluginRuntime): SharedHandlers {
+  const persistCompactionSnapshot = async (
+    sessionId: string,
+    opts?: { dedupe?: boolean },
+  ): Promise<{ snapshot: string; events: SessionEvent[] }> => {
+    rt.db.ensureSession(sessionId, rt.projectDir);
+    const events = rt.db.getEvents(sessionId);
+    if (events.length === 0) return { snapshot: "", events: [] };
+    const sourceHash = fingerprintEvents(events);
+
+    if (opts?.dedupe) {
+      // v2 only: a single logical compaction can invoke the compaction hook
+      // twice on v2.0.11 (native compaction overflow → recoverLocally → the
+      // ordinary compaction path runs again). Reuse the previous write ONLY
+      // when the stored source fingerprint matches the current ordered event
+      // set. Comparing event COUNT is unsound: SessionDB caps a session at
+      // 1000 events and FIFO-evicts the oldest, so the set can change while
+      // the length stays constant. A legacy/unhashed row (NULL) falls through
+      // and rebuilds once, storing the hash for the next dedupe.
+      const existing = rt.db.getResume(sessionId);
+      if (
+        existing &&
+        existing.source_hash != null &&
+        existing.consumed === 0 &&
+        existing.source_hash === sourceHash
+      ) {
+        return { snapshot: existing.snapshot, events };
+      }
+    }
+
+    const stats = rt.db.getSessionStats(sessionId);
+    const snapshot = buildResumeSnapshot(events, {
+      compactCount: (stats?.compact_count ?? 0) + 1,
+    });
+
+    rt.db.upsertResume(sessionId, snapshot, events.length, sourceHash);
+    rt.db.incrementCompactCount(sessionId);
+
+    return { snapshot, events };
+  };
+
   return {
+    persistCompactionSnapshot,
+
     // ── PreToolUse: Routing enforcement ─────────────────
 
     "toolExecuteBefore": async (input: BeforeHookInput, output: BeforeHookOutput): Promise<void> => {
@@ -1110,17 +1183,8 @@ function createSharedHandlers(rt: PluginRuntime): SharedHandlers {
       const sessionId = input?.sessionID;
       if (!sessionId) return "";
       try {
-        rt.db.ensureSession(sessionId, rt.projectDir);
-        const events = rt.db.getEvents(sessionId);
-        if (events.length === 0) return "";
-
-        const stats = rt.db.getSessionStats(sessionId);
-        const snapshot = buildResumeSnapshot(events, {
-          compactCount: (stats?.compact_count ?? 0) + 1,
-        });
-
-        rt.db.upsertResume(sessionId, snapshot, events.length);
-        rt.db.incrementCompactCount(sessionId);
+        const { snapshot, events } = await persistCompactionSnapshot(sessionId);
+        if (!snapshot) return "";
 
         // Mutate output.context to inject the snapshot
         output.context.push(snapshot);
@@ -1481,8 +1545,9 @@ async function registerToolExecuteHooksV2(
  * OPTIONAL: register the session "context" hook that bridges the v1
  * experimental.chat.system.transform behavior (routing block + resume
  * snapshot injection). v2 delivers `event.system: SystemPart[]` (MUTABLE,
- * push {text}) and the hook "runs again for compaction" — covering the v1
- * compaction-injection flows too. The v1 shared handler splices STRINGS at
+ * push {text}) for primary agent requests and tool continuations; the
+ * compaction path is a SEPARATE hook (registerSessionCompactionV2). The v1
+ * shared handler splices STRINGS at
  * index 1 of a string array, so we: (1) build a string view of the parts,
  * (2) run the shared handler on that view, (3) reconcile back — original
  * part objects are preserved positionally (content-equality match) and
@@ -1563,6 +1628,41 @@ async function registerSessionPromptV2(
     return undefined;
   };
   return tryRegister(sessionHook, ctx?.session, "prompt", handler);
+}
+
+/**
+ * OPTIONAL: register the session "compaction" hook — the additive v2
+ * persistence-only equivalent of the v1 experimental.session.compacting
+ * snapshot generation. It NEVER sets event.result and NEVER mutates
+ * event.system/messages: the host's transcript-aware compaction summary stays
+ * authoritative, and this hook only persists the deterministic resume
+ * snapshot for a later continuation. Persistence is DEDUPED (a single logical
+ * compaction can fire this hook twice on v2.0.11). Returns ok=false when the
+ * surface is absent or registration fails.
+ */
+async function registerSessionCompactionV2(
+  ctx: V2SetupContext | undefined,
+  rt: PluginRuntime,
+  handlers: SharedHandlers,
+): Promise<V2RegisterOutcome> {
+  const sessionHook =
+    ctx?.session && typeof ctx.session.hook === "function" ? ctx.session.hook : undefined;
+  if (!sessionHook) return { ok: false };
+  const handler = async (event: unknown) => {
+    if (rt.closed) return undefined; // torn down — silent no-op
+    const ev = (event ?? {}) as Record<string, any>;
+    const sessionId = v2SessionIdOf(ev) || (typeof ev.sessionID === "string" ? ev.sessionID : "");
+    if (!sessionId) return undefined; // cannot attribute — honest no-op
+    try {
+      // Persistence-only: retain the host's authoritative compaction summary.
+      // dedupe: a single logical compaction can fire this hook twice on v2.0.11.
+      await handlers.persistCompactionSnapshot(sessionId, { dedupe: true });
+    } catch (err) {
+      rt.logHookError("v2.session.compaction", err, sessionId);
+    }
+    return undefined;
+  };
+  return tryRegister(sessionHook, ctx?.session, "compaction", handler);
 }
 
 /**
@@ -2016,11 +2116,6 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
       projectDir,
       {
         sessionContextDegraded: !sessionHookSurface,
-        // v2 session.hook("context") also runs for compaction — compaction
-        // injection degrades exactly with the session-context surface. A
-        // registration FAILURE despite the surface is corrected below via
-        // markCapabilityDegraded.
-        preCompactDegraded: !sessionHookSurface,
       },
     );
     rt = activeRt;
@@ -2064,21 +2159,35 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
     // MCP server (v1 never sets this: it gates on the MCP sentinel as always).
     syncRoutingNativeToolsFlag(activeRt, state);
 
-    // Optional: session "context" hook (routing block + resume snapshot +
-    // compaction injection — v2 runs this hook for continuations AND
-    // compaction, covering the v1 system.transform AND compacting flows).
+    // Optional: session "context" hook (routing block + resume snapshot
+    // injection — the v1 experimental.chat.system.transform equivalent).
     const sessionContext = await attemptOptionalV2(activeRt, {
       surfacePresent: sessionHookSurface,
       register: () => registerSessionContextV2(ctx, activeRt, handlers),
       logKeyMissing: "v2-session-context-missing",
       missingMessage:
-        "context-mode v2: session context injection unavailable (no ctx.session.hook('context')) — routing block + resume snapshot + compaction injection will not happen",
+        "context-mode v2: session context injection unavailable (no ctx.session.hook('context')) — routing block + resume snapshot will not happen",
       logKeyFailed: "v2-session-context-failed",
       failedMessage:
-        "context-mode v2: session context hook registration failed — routing block + resume snapshot + compaction injection will not happen",
-      degradeCapabilities: ["sessionStart", "canInjectSessionContext", "preCompact"],
+        "context-mode v2: session context hook registration failed — routing block + resume snapshot will not happen",
+      degradeCapabilities: ["sessionStart", "canInjectSessionContext"],
     });
     disposes.push(...sessionContext.disposes);
+
+    // Optional: session "compaction" hook (persistence-only resume snapshot
+    // generation on compaction — additive v2 PreCompact equivalent).
+    const sessionCompaction = await attemptOptionalV2(activeRt, {
+      surfacePresent: sessionHookSurface,
+      register: () => registerSessionCompactionV2(ctx, activeRt, handlers),
+      logKeyMissing: "v2-session-compaction-missing",
+      missingMessage:
+        "context-mode v2: session compaction hook unavailable (no ctx.session.hook('compaction')) — resume snapshots will not be generated on compaction",
+      logKeyFailed: "v2-session-compaction-failed",
+      failedMessage:
+        "context-mode v2: session compaction hook registration failed — resume snapshots will not be generated on compaction",
+      degradeCapabilities: ["preCompact"],
+    });
+    disposes.push(...sessionCompaction.disposes);
 
     // Optional: session "prompt" hook (user-prompt capture — v1 chat.message
     // equivalent).
@@ -2114,7 +2223,7 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
 
     rt.logOnce(
       "v2-setup-complete",
-      `context-mode v2 setup complete: native tools via ctx.tool.transform; tool hooks via ${toolRegs.via}; session context: ${sessionContext.status}; prompt capture: ${promptCapture.status}; event bus: ${eventBus.status}; permission hook: ${permissionHook.status}`,
+      `context-mode v2 setup complete: native tools via ctx.tool.transform; tool hooks via ${toolRegs.via}; session context: ${sessionContext.status}; session compaction: ${sessionCompaction.status}; prompt capture: ${promptCapture.status}; event bus: ${eventBus.status}; permission hook: ${permissionHook.status}`,
       "info",
     );
 

@@ -500,6 +500,29 @@ describe("Resume", () => {
     assert.equal(resume!.event_count, 20);
     assert.equal(resume!.consumed, 0);
   });
+
+  test("upsertResume stores and returns source_hash when provided", () => {
+    const db = createTestDB();
+    const sid = "sess-hash";
+    const hash = "abc123deadbeef";
+
+    db.upsertResume(sid, "<resume>hashed</resume>", 7, hash);
+
+    const resume = db.getResume(sid);
+    assert.ok(resume !== null);
+    assert.equal(resume!.source_hash, hash);
+  });
+
+  test("upsertResume written without a hash returns source_hash NULL", () => {
+    const db = createTestDB();
+    const sid = "sess-nohash";
+
+    db.upsertResume(sid, "<resume>legacy</resume>", 3);
+
+    const resume = db.getResume(sid);
+    assert.ok(resume !== null);
+    assert.equal(resume!.source_hash, null);
+  });
 });
 
 // ════════════════════════════════════════════

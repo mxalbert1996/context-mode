@@ -56,7 +56,8 @@ calls:
 |---|---|---|
 | native `ctx_*` tools | `ctx.tool.transform(editor)` — each tool added with `options: { codemode: false }` so it stays individually callable (with the default codemode the executor folds tools into its single `execute` CodeMode tool and direct calls fail) | yes |
 | `tool.execute.before/after` | `ctx.tool.hook("execute.before" / "execute.after")` | yes |
-| system transform / routing block / resume injection | `ctx.session.hook("context")` (mutable `system: [{type:"text", text}]` parts) — also runs for continuations and compaction | no (degrades) |
+| system transform / routing block / cross-session resume injection | `ctx.session.hook("context")` (mutable `system: [{type:"text", text}]` parts) — routing block + cross-session resume, for primary agent requests and tool continuations | no (degrades) |
+| compaction snapshot persistence (`experimental.session.compacting`) | `ctx.session.hook("compaction")` — persists the deterministic resume snapshot and deliberately leaves `event.result` unset so OpenCode retains its transcript-aware compaction summary (persistence is deduped by a stable source fingerprint of the captured events, so a double-fired compaction cannot double-write) | no (degrades) |
 | `chat.message` (prompt capture) | `ctx.session.hook("prompt")` (`event.prompt.text`) | no (degrades) |
 | `event` capture | `ctx.event.subscribe()` (async iterable) | no (degrades) |
 | `ctx.client.app.log` | none — v2 `app` exposes only `name`/`version`/`channel`; logs go to the plugin sink (`<data>/opencode/log/context-mode.log`), stderr as last resort | — |

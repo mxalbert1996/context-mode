@@ -622,6 +622,11 @@ export interface ResumeRow {
   snapshot: string;
   event_count: number;
   consumed: number;
+  /**
+   * Deterministic fingerprint of the source event set the snapshot was built
+   * from (v2 compaction dedupe). NULL for legacy / non-v2 writers.
+   */
+  source_hash: string | null;
 }
 
 /** Aggregated tool-call stats for a single session. */
@@ -868,6 +873,7 @@ export class SessionDB extends SQLiteBase {
         session_id TEXT NOT NULL UNIQUE,
         snapshot TEXT NOT NULL,
         event_count INTEGER NOT NULL,
+        source_hash TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         consumed INTEGER NOT NULL DEFAULT 0
       );
@@ -911,6 +917,21 @@ export class SessionDB extends SQLiteBase {
     } catch (err) {
       // best-effort migration only — surface it (rate-limited).
       logDbError("SessionDB.initSchema.usageCursorMigration", err, this.dbPath);
+    }
+
+    // Migration: nullable source-content fingerprint for the resume snapshot
+    // (v2 compaction dedupe). Comparing a persisted hash of the ordered events
+    // is sound even when the event COUNT is unchanged — SessionDB caps a
+    // session at 1000 events and FIFO-evicts the oldest, so a changed set can
+    // keep the same length. Idempotent — guarded by a table_xinfo column check.
+    try {
+      const resumeCols = (this.db.pragma("table_xinfo(session_resume)") ?? []) as Array<{ name: string }>;
+      if (!resumeCols.some((c) => c.name === "source_hash")) {
+        this.db.exec("ALTER TABLE session_resume ADD COLUMN source_hash TEXT");
+      }
+    } catch (err) {
+      // best-effort migration only — surface it (rate-limited).
+      logDbError("SessionDB.initSchema.sourceHashMigration", err, this.dbPath);
     }
 
   }
@@ -1053,16 +1074,17 @@ export class SessionDB extends SQLiteBase {
 
     // ── Resume ──
     p(S.upsertResume,
-      `INSERT INTO session_resume (session_id, snapshot, event_count)
-       VALUES (?, ?, ?)
+      `INSERT INTO session_resume (session_id, snapshot, event_count, source_hash)
+       VALUES (?, ?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
          snapshot = excluded.snapshot,
          event_count = excluded.event_count,
+         source_hash = excluded.source_hash,
          created_at = datetime('now'),
          consumed = 0`);
 
     p(S.getResume,
-      `SELECT snapshot, event_count, consumed FROM session_resume WHERE session_id = ?`);
+      `SELECT snapshot, event_count, consumed, source_hash FROM session_resume WHERE session_id = ?`);
 
     p(S.markResumeConsumed,
       `UPDATE session_resume SET consumed = 1 WHERE session_id = ?`);
@@ -1577,8 +1599,13 @@ export class SessionDB extends SQLiteBase {
   /**
    * Upsert a resume snapshot for a session. Resets consumed flag on update.
    */
-  upsertResume(sessionId: string, snapshot: string, eventCount?: number): void {
-    this.stmt(S.upsertResume).run(sessionId, snapshot, eventCount ?? 0);
+  upsertResume(
+    sessionId: string,
+    snapshot: string,
+    eventCount?: number,
+    sourceHash?: string | null,
+  ): void {
+    this.stmt(S.upsertResume).run(sessionId, snapshot, eventCount ?? 0, sourceHash ?? null);
   }
 
   /**

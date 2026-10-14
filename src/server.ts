@@ -1837,6 +1837,11 @@ EXAMPLE: ctx_execute(language: "javascript", code: "const out = require('child_p
           "Use ctx_search(queries: [...]) to retrieve specific sections. Example: 'failing tests', 'HTTP 500 errors'." +
           "\n\nTIP: Use specific technical terms, not just concepts. Check 'Searchable terms' in the response for available vocabulary.",
         ),
+      // Display-only label read by chat hosts (e.g. OpenChamber); execution ignores it.
+      description: z
+        .string()
+        .optional()
+        .describe("A short (3-8 word) label for this call, shown beside the tool call in chat UIs that display a tool description. Always provide it; it is display-only and never affects execution."),
     }),
   },
   async ({ language, code, timeout, background, cwd, intent }) => {
@@ -2208,6 +2213,11 @@ EXAMPLE: ctx_execute_file(path: "data.csv", language: "javascript", code: "const
           "What you're looking for in the output. When provided and output is large (>5KB), " +
           "returns only matching sections via BM25 search instead of truncated output.",
         ),
+      // Display-only label read by chat hosts (e.g. OpenChamber); execution ignores it.
+      description: z
+        .string()
+        .optional()
+        .describe("A short (3-8 word) label for this call, shown beside the tool call in chat UIs that display a tool description. Always provide it; it is display-only and never affects execution."),
     }),
   },
   async ({ path, language, code, timeout, intent }) => {
@@ -4365,6 +4375,11 @@ EXAMPLE: ctx_batch_execute(
           "— useful when you want the batch commands to enrich context and " +
           "the queries to also surface related prior knowledge in one round trip.",
         ),
+      // Display-only label read by chat hosts (e.g. OpenChamber); execution ignores it.
+      description: z
+        .string()
+        .optional()
+        .describe("A short (3-8 word) label for this call, shown beside the tool call in chat UIs that display a tool description. Always provide it; it is display-only and never affects execution."),
     }),
   },
   async ({ commands, queries, timeout, concurrency, cwd, query_scope }) => {

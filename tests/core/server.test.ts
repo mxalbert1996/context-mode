@@ -6725,3 +6725,25 @@ describe("ctx_* MCP tool annotations (#846)", () => {
     }
   });
 });
+
+// ─── ctx_* execute tools: optional display description ─────
+// Chat hosts render `input.description` as the row subtitle beside the tool name,
+// the way the built-in shell tool shows its command. It is display-only, so it
+// stays optional and callers that omit it keep working.
+describe("ctx_* execute tools expose an optional display description", () => {
+  type InputSchema = { shape?: Record<string, unknown> };
+  const tools = REGISTERED_CTX_TOOLS as unknown as Array<{
+    name: string;
+    config: { inputSchema?: InputSchema };
+  }>;
+
+  for (const name of ["ctx_execute", "ctx_execute_file", "ctx_batch_execute"]) {
+    test(`${name} accepts a description that execution ignores`, () => {
+      const field = tools.find((t) => t.name === name)?.config.inputSchema?.shape?.description as
+        | { isOptional?: () => boolean }
+        | undefined;
+      expect(field, `${name} has no \`description\` field`).toBeDefined();
+      expect(field!.isOptional?.()).toBe(true);
+    });
+  }
+});

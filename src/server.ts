@@ -1827,7 +1827,7 @@ EXAMPLE: ctx_execute(language: "javascript", code: "const out = require('child_p
       cwd: z
         .string()
         .optional()
-        .describe("Optional working directory for shell commands. Non-shell languages still execute from their sandbox temp directory."),
+        .describe("Optional working directory for the executed process. ALL languages run in the project directory by default (relative paths and project-aware tools resolve naturally); set this to override. TMPDIR still points to a per-run sandbox that is cleaned up automatically."),
       intent: z
         .string()
         .optional()

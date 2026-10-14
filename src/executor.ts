@@ -214,12 +214,12 @@ interface ExecuteOptions {
   /** Keep process running after timeout instead of killing it. */
   background?: boolean;
   /**
-   * Issue #45 — per-call cwd override for the shell language. When set,
-   * the shell script runs in this directory instead of `#projectRoot`.
-   * Non-shell languages keep their tmpDir sandbox cwd regardless (the
-   * script file lives there). Used by Codex MCP handlers to pin shell
-   * commands to a resolved project root when the spawning host inherited
-   * a non-project cwd (e.g. $HOME).
+   * Issue #45 — per-call cwd override. When set, the process runs in this
+   * directory instead of `#projectRoot`, for ALL languages (#788 unified
+   * them — the script file lives in the sandbox tmpDir and is passed by
+   * absolute path, so cwd is free to be the project root). Used by Codex
+   * MCP handlers to pin commands to a resolved project root when the
+   * spawning host inherited a non-project cwd (e.g. $HOME).
    */
   cwd?: string;
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { existsSync, mkdtempSync, rmSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import {
@@ -135,27 +135,27 @@ describe.runIf(runtimes.python)(
 );
 
 describe("#788(b) — sandbox temp dir is cleaned up after run", () => {
-  it("leaves no .ctx-mode-* dir behind after a completed non-shell run", async () => {
+  it("removes this run's sandbox dir after a completed non-shell run", async () => {
     const executor = new PolyglotExecutor({ runtimes });
-    const tmpRoot = process.platform === "win32"
-      ? (process.env.TEMP ?? process.env.TMP ?? tmpdir())
-      : tmpdir();
 
-    const before = new Set(
-      existsSync(tmpRoot)
-        ? readdirSync(tmpRoot).filter((n) => n.startsWith(".ctx-mode-"))
-        : [],
-    );
-
+    // The executed process reports its own sandbox dir: the executor sets
+    // TMPDIR to the .ctx-mode-* tmpDir for EVERY language (see #spawn env).
+    // Asserting THIS run's dir is hermetic — a global .ctx-mode-* scan of the
+    // shared OS temp dir races against sibling test files running in
+    // parallel (vitest runs files concurrently and they legitimately create
+    // sandboxes too, so a dir created mid-window reads as a false leak).
     const lang = runtimes.python ? "python" : "shell";
-    const code = lang === "python" ? "print('hi')" : "echo hi";
+    const code = lang === "python"
+      ? "import os; print(os.environ.get('TMPDIR', ''))"
+      : 'echo "$TMPDIR"';
+
     const result = await executor.execute({ language: lang, code });
     expect(result.exitCode).toBe(0);
 
-    const after = existsSync(tmpRoot)
-      ? readdirSync(tmpRoot).filter((n) => n.startsWith(".ctx-mode-"))
-      : [];
-    const leaked = after.filter((n) => !before.has(n));
-    expect(leaked).toEqual([]);
+    const sandboxDir = result.stdout.trim().split("\n").at(-1)?.trim() ?? "";
+    expect(basename(sandboxDir)).toMatch(/^\.ctx-mode-/);
+
+    // cleanupTmpDir runs synchronously before execute() resolves.
+    expect(existsSync(sandboxDir)).toBe(false);
   });
 });

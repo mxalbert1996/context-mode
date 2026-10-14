@@ -26,9 +26,13 @@
  * anything mandatory missing → no claim (MCP fallback stays intact); the
  * session/event surfaces are optional and degrade with one-time logs.
  *
- * Hybrid-host guard: a process-global activation registry (keyed by plugin
- * id + normalized project directory) ensures only ONE flavor activates per
- * project per process. The second entrypoint (v1 server() or v2 setup())
+ * Hybrid-host guard: a process-global activation registry (keyed by
+ * normalized project directory) ensures only ONE FLAVOR activates per
+ * project per process — v1 and v2 never double-claim the same project.
+ * Multiple v2 entries for one project DO coexist: OpenCode v2 runs one
+ * setup() per location in a multi-location server process, so every
+ * location's setup fully registers (with its own claim, released by its
+ * own cleanup). The second v1 entrypoint for an already-claimed project
  * returns a noop/empty registration and logs once ("context-mode already
  * active via <flavor>"). v1 claims if no claimant exists; v1 behavior is
  * otherwise unchanged for existing users.
@@ -67,8 +71,10 @@ import type { SessionEvent } from "../../types.js";
 import {
   AdapterPlatformType,
   OpenCodeAdapter,
+  claimActivation,
   getPluginGlobalState,
   normalizeProjectKey,
+  releaseActivation,
   type PluginGlobalState,
 } from "./index.js";
 import type { OpenCodeAdapterOptions } from "./index.js";
@@ -1426,21 +1432,28 @@ function syncRoutingNativeToolsFlag(rt: PluginRuntime | undefined, state: Plugin
     | undefined)?.setContextModeToolsAvailable;
   if (typeof setFn !== "function") return;
   try {
-    setFn([...state.activations.values()].some((entry) => entry.nativeToolsConfirmed === true));
+    setFn(
+      [...state.activations.values()]
+        .flat()
+        .some((entry) => entry.nativeToolsConfirmed === true),
+    );
   } catch {
     // Best-effort — enforcement must never break on a signal error.
   }
 }
 
 /**
- * Resolve the project directory from an unconfirmed v2 setup context.
- * Probes ctx.directory (v1 parity) then ctx.project.directory, falling back
- * to process.cwd() like the v1 path.
+ * Probes the v2 location directory FIRST (ctx.location.directory — the only
+ * per-location signal OpenCode v2 hosts provide; the setup ctx carries no
+ * top-level `directory`), then ctx.directory (v1 parity), then
+ * ctx.project.directory, falling back to process.cwd() like the v1 path.
  */
 function resolveV2ProjectDir(ctx: V2SetupContext | undefined): string {
+  const locationDir = ctx?.location?.directory;
   const dir =
+    (typeof locationDir === "string" && locationDir.length > 0 ? locationDir : undefined) ??
     ctx?.directory ??
-    (ctx as { project?: { directory?: string } } | undefined)?.project?.directory;
+    ctx?.project?.directory;
   return resolve(typeof dir === "string" && dir.length > 0 ? dir : process.cwd());
 }
 
@@ -2053,10 +2066,13 @@ async function attemptOptionalV2(
     logKeyFailed?: string;
     failedMessage?: string;
     degradeCapabilities?: Array<"sessionStart" | "canInjectSessionContext" | "preCompact">;
+    /** Scopes the one-time log keys (e.g. projectKey) so per-location setups each log. */
+    logScope?: string;
   },
 ): Promise<{ status: "registered" | "unavailable"; disposes: V2Dispose[] }> {
+  const scoped = (key: string) => (opts.logScope ? `${key}:${opts.logScope}` : key);
   if (!opts.surfacePresent) {
-    rt.logOnce(opts.logKeyMissing, opts.missingMessage, "warn");
+    rt.logOnce(scoped(opts.logKeyMissing), opts.missingMessage, "warn");
     for (const cap of opts.degradeCapabilities ?? []) rt.adapter.markCapabilityDegraded(cap);
     return { status: "unavailable", disposes: [] };
   }
@@ -2065,9 +2081,9 @@ async function attemptOptionalV2(
     return { status: "registered", disposes: reg.dispose ? [reg.dispose] : [] };
   }
   if (opts.logKeyFailed && opts.failedMessage) {
-    rt.logOnce(opts.logKeyFailed, opts.failedMessage, "warn");
+    rt.logOnce(scoped(opts.logKeyFailed), opts.failedMessage, "warn");
   } else {
-    rt.logOnce(opts.logKeyMissing, opts.missingMessage, "warn");
+    rt.logOnce(scoped(opts.logKeyMissing), opts.missingMessage, "warn");
   }
   for (const cap of opts.degradeCapabilities ?? []) rt.adapter.markCapabilityDegraded(cap);
   return { status: "unavailable", disposes: [] };
@@ -2080,9 +2096,11 @@ async function attemptOptionalV2(
  * the plugin. Returns an object mapping hook event names to async handler
  * functions over the shared runtime.
  *
- * Hybrid-host guard: if the v2 setup() path (or another v1 server() call)
- * already claimed activation for this project, this returns an EMPTY
- * registration — no hooks, no DB init — and logs once.
+ * Hybrid-host guard: if any activation (v2 setup() or another v1 server()
+ * call) already claimed this project, this returns an EMPTY registration —
+ * no hooks, no DB init — and logs once. Any flavor blocks v1: a v2 claimant
+ * with confirmed native tools must not be double-registered, and v1 hosts
+ * are single-project-per-process so v1-vs-v1 dedupe needs no scoping.
  *
  * KiloCode expects: export default { id: string, server: (input) => Promise<Hooks> }
  * OpenCode expects: export const ContextModePlugin = (ctx) => Promise<Hooks>
@@ -2093,12 +2111,12 @@ async function createContextModePlugin(ctx: PluginContext) {
 
   // Hybrid-host guard — duplicate activation → noop registration.
   const existing = state.activations.get(projectKey);
-  if (existing) {
+  if (existing && existing.length > 0) {
     logOnceImpl(
       state,
       ctx,
       `duplicate-activation:${projectKey}`,
-      `context-mode already active via ${existing.flavor} — duplicate v1 registration is a noop for this project`,
+      `context-mode already active via ${existing[0].flavor} — duplicate v1 registration is a noop for this project`,
       "info",
     );
     return { tool: {} };
@@ -2107,11 +2125,7 @@ async function createContextModePlugin(ctx: PluginContext) {
   // v1 native tools are CONFIRMED by construction: server() always returns
   // the full native tool map (buildNativeTools below). Recorded so the
   // adapter's legacy-MCP-removal policy can trust this claimant in-process.
-  state.activations.set(projectKey, {
-    flavor: "v1",
-    claimedAt: Date.now(),
-    nativeToolsConfirmed: true,
-  });
+  const claim = claimActivation(state, projectKey, "v1");
   try {
     const rt = await createPluginRuntime(ctx);
     const handlers = createSharedHandlers(rt);
@@ -2140,7 +2154,7 @@ async function createContextModePlugin(ctx: PluginContext) {
     };
   } catch (err) {
     // Release the claim so a retry (or the other flavor) can activate.
-    state.activations.delete(projectKey);
+    releaseActivation(state, projectKey, claim);
     throw err;
   }
 }
@@ -2152,8 +2166,15 @@ async function createContextModePlugin(ctx: PluginContext) {
  * v2 surfaces the host exposes (runtime capability probing) and honors the
  * hybrid-host activation guard.
  *
- * ACTIVATION POLICY: v2 may claim ONLY when the FULL mandatory surface
- * succeeds — tool execute before/after hooks AND native ctx_* tool
+ * OpenCode v2 calls setup() once PER LOCATION in a multi-location server
+ * process (verified against the host source: per-location plugin supervisor
+ * + tool registry, module state shared process-wide). Every call therefore
+ * performs a FULL registration against its own ctx and claims its own
+ * activation entry — only a pre-existing v1 claim for the same project
+ * blocks (cross-flavor first-wins, see the guard below).
+ *
+ * ACTIVATION POLICY: each v2 scope may claim ONLY when the FULL mandatory
+ * surface succeeds — tool execute before/after hooks AND native ctx_* tool
  * registration. If native tools cannot be registered, v2 does NOT claim
  * (one-time degraded-reason log, MCP fallback retained) so a v1 server()
  * entry can still claim for this project; on pure v2 hosts the same path
@@ -2162,23 +2183,30 @@ async function createContextModePlugin(ctx: PluginContext) {
  * never a fake success.
  *
  * Returns a cleanup function (where the host supports one) that unregisters
- * everything registered, closes the runtime DB handle, and releases the
- * activation claim so a plugin reload can re-claim without double-registering
- * or leaking the old DB.
+ * everything registered, closes the runtime DB handle, and releases THIS
+ * scope's activation claim (other locations' claims are untouched) so a
+ * plugin reload can re-claim without double-registering or leaking the old
+ * DB.
  */
 async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
   const state = getPluginGlobalState();
   const projectDir = resolveV2ProjectDir(ctx);
   const projectKey = normalizeProjectKey(projectDir);
 
-  // Hybrid-host guard — duplicate activation → noop + one-time log.
+  // Hybrid-host guard — CROSS-FLAVOR only. A v1 claim for this project means
+  // server() already registered through the host's own hook system, so a v2
+  // registration on top would double-register. Other v2 entries NEVER block:
+  // OpenCode v2 runs one setup() PER LOCATION (own tool registry per scope),
+  // so each location's setup must register — blocking on the first location's
+  // claim is what starved every later location of ctx_* tools.
   const existing = state.activations.get(projectKey);
-  if (existing) {
+  const v1Claimant = existing?.find((entry) => entry.flavor === "v1");
+  if (v1Claimant) {
     logOnceImpl(
       state,
       ctx,
       `duplicate-activation:${projectKey}`,
-      `context-mode already active via ${existing.flavor} — duplicate v2 setup is a noop for this project`,
+      `context-mode already active via v1 — duplicate v2 setup is a noop for this project`,
       "info",
     );
     return;
@@ -2201,13 +2229,10 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
     return;
   }
 
-  // Claim early so concurrent/second entries noop while setup is in flight;
-  // the claim is RELEASED below unless the full mandatory surface succeeds.
-  state.activations.set(projectKey, {
-    flavor: "v2",
-    claimedAt: Date.now(),
-    nativeToolsConfirmed: false,
-  });
+  // Claim early so a concurrent v1 entry for this project noops while setup
+  // is in flight; the claim is RELEASED below unless the full mandatory
+  // surface succeeds.
+  const claim = claimActivation(state, projectKey, "v2");
 
   const disposes: V2Dispose[] = [];
   let rt: PluginRuntime | undefined;
@@ -2215,7 +2240,7 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
   /** Failure path: unregister everything, close the DB, release the claim. */
   const failSetup = async (message: string, level: EmitLevel = "warn"): Promise<void> => {
     await teardownV2(disposes, rt);
-    state.activations.delete(projectKey);
+    releaseActivation(state, projectKey, claim);
     // No (remaining) native claimant → routing availability signal back to
     // its default so redirects never point at dead tools.
     syncRoutingNativeToolsFlag(rt, state);
@@ -2277,11 +2302,7 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
     }
 
     // Full mandatory surface acquired — the claim is now real.
-    state.activations.set(projectKey, {
-      flavor: "v2",
-      claimedAt: Date.now(),
-      nativeToolsConfirmed: true,
-    });
+    claim.nativeToolsConfirmed = true;
     // Native ctx_* tools are now reachable in-process → routing may emit
     // curl/HTTP redirect + deny guidance pointing at them even without an
     // MCP server (v1 never sets this: it gates on the MCP sentinel as always).
@@ -2299,6 +2320,7 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
       failedMessage:
         "context-mode v2: session context hook registration failed — routing block + resume snapshot will not happen",
       degradeCapabilities: ["sessionStart", "canInjectSessionContext"],
+      logScope: projectKey,
     });
     disposes.push(...sessionContext.disposes);
 
@@ -2314,6 +2336,7 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
       failedMessage:
         "context-mode v2: session compaction hook registration failed — resume snapshots will not be generated on compaction",
       degradeCapabilities: ["preCompact"],
+      logScope: projectKey,
     });
     disposes.push(...sessionCompaction.disposes);
 
@@ -2325,6 +2348,7 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
       logKeyMissing: "v2-prompt-capture-missing",
       missingMessage:
         "context-mode v2: user-prompt capture unavailable (no ctx.session.hook('prompt')) — prompt capture inactive",
+      logScope: projectKey,
     });
     disposes.push(...promptCapture.disposes);
 
@@ -2335,6 +2359,7 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
       logKeyMissing: "v2-event-bus-missing",
       missingMessage:
         "context-mode v2: event bus unavailable (no ctx.event.subscribe) — per-turn token/cost capture inactive",
+      logScope: projectKey,
     });
     disposes.push(...eventBus.disposes);
 
@@ -2346,20 +2371,22 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
       logKeyMissing: "v2-permission-hook-missing",
       missingMessage:
         "context-mode v2: permission evaluate hook unavailable (no ctx.permission.hook) — ask/allow security semantics inactive; deny enforcement stays on tool.execute.before",
+      logScope: projectKey,
     });
     disposes.push(...permissionHook.disposes);
 
     rt.logOnce(
-      "v2-setup-complete",
+      `v2-setup-complete:${projectKey}`,
       `context-mode v2 setup complete: native tools via ctx.tool.transform; tool hooks via ${toolRegs.via}; session context: ${sessionContext.status}; session compaction: ${sessionCompaction.status}; prompt capture: ${promptCapture.status}; event bus: ${eventBus.status}; permission hook: ${permissionHook.status}`,
       "info",
     );
 
     return async () => {
       // Cleanup: unregister everything registered, close the runtime DB
-      // handle, then release the activation claim so a reload can re-claim.
+      // handle, then release THIS scope's activation claim (other locations'
+      // claims stay) so a reload can re-claim.
       await teardownV2(disposes, rt);
-      state.activations.delete(projectKey);
+      releaseActivation(state, projectKey, claim);
       // Torn down → routing availability signal off (unless another native
       // claimant remains in this process).
       syncRoutingNativeToolsFlag(rt, state);
@@ -2368,7 +2395,7 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
     // Setup failed — leave no live partial registrations and no leaked DB
     // handle; release the claim so a retry (or the other flavor) can activate.
     await teardownV2(disposes, rt);
-    state.activations.delete(projectKey);
+    releaseActivation(state, projectKey, claim);
     syncRoutingNativeToolsFlag(rt, state);
     emitHostLog(ctx, "error", formatPluginError(null, err));
     return;

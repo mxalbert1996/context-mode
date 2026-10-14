@@ -73,7 +73,25 @@ export type V2ToolInfo = {
 };
 
 export type V2SetupContext = {
+  /**
+   * v1-parity probe — ABSENT on OpenCode v2 hosts (verified against the
+   * host source, 2.0.27–2.0.29: the promise adapter builds the setup ctx
+   * without it).
+   */
   directory?: string;
+  /**
+   * The ONLY per-location signal on OpenCode v2 hosts: setup() runs once
+   * per location in a multi-location server process, and ctx.location is
+   * the Location.Info of the location being booted. `directory` there is
+   * the location's own (worktree-aware) directory; `project.canonical`
+   * would be the repo's MAIN checkout — deliberately not used, matching
+   * v1 ctx.directory semantics and the per-worktree session-DB design.
+   */
+  location?: {
+    directory?: string;
+    workspaceID?: string;
+    project?: { directory?: string; canonical?: string };
+  };
   project?: { directory?: string };
   client?: PluginClient;
   app?: { name?: string; version?: string; channel?: string };

@@ -33,7 +33,7 @@
  */
 
 import { existsSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { loadDatabase } from "../db-base.js";
 import {
   getWorktreeSuffix,
@@ -300,6 +300,32 @@ export function purgeSession(opts: PurgeOpts): PurgeResult {
     }
   }
   if (storeFound) deleted.push("knowledge base (FTS5)");
+
+  // ── 1b. Fetched-page archive (per-project PageStore). ─────────────────
+  // The lossless fetch sidecar is named after the SAME hash variants as the
+  // FTS5 store (`<hash>-fetch-pages.db`), so it is swept with the same
+  // dual-hash pattern. The caller closes any open PageStore handle BEFORE
+  // invoking purgeSession (Windows file locks) — the ctx_purge handler
+  // does this via the per-project page-store cache.
+  let pagesFound = false;
+  if (storePath) {
+    const pageStorePath = join(
+      dirname(storePath),
+      `${basename(storePath, ".db")}-fetch-pages.db`,
+    );
+    if (tryUnlinkSqliteTriple(pageStorePath, wipedPaths)) pagesFound = true;
+  }
+  if (contentDir) {
+    const canonicalHash = hashProjectDirCanonical(projectDir);
+    const legacyHash    = hashProjectDirLegacy(projectDir);
+    const pageHashes = canonicalHash === legacyHash
+      ? [canonicalHash]
+      : [canonicalHash, legacyHash];
+    for (const h of pageHashes) {
+      if (tryUnlinkSqliteTriple(join(contentDir, `${h}-fetch-pages.db`), wipedPaths)) pagesFound = true;
+    }
+  }
+  if (pagesFound) deleted.push("fetched page archive");
 
   // ── 2. Legacy shared content DB at ~/.context-mode/content/<hash>.db.
   // Same reasoning as (1) — single hash, legacy code-path only.

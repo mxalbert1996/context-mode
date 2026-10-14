@@ -2372,16 +2372,19 @@ describe("ctx_purge is the sole reset/wipe mechanism", () => {
     // 1. Closes the FTS5 knowledge base BEFORE wiping (releases Windows lock)
     expect(purgeBody).toContain("openStore.cleanup()");
     expect(purgeBody).toContain("_stores.delete(storePathForPurge)");
+    // 1b. Same lock release for the per-project fetched-page archive — the
+    //     file wipe itself is owned by purgeSession (deep module).
+    expect(purgeBody).toContain("_pageStores.delete(storePathForPurge)");
     // 2. Delegates the on-disk wipe to the purgeSession deep module so all
     //    file-kind sweeps (session DB, events.md, cleanup flag, FTS5 store,
-    //    legacy content) flow through ONE code path with uniform dual-hash.
+    //    fetched-page archive, legacy content) flow through ONE code path
+    //    with uniform dual-hash.
     expect(purgeBody).toContain("purgeSession({");
     expect(purgeBody).toContain("projectDir: getProjectDir()");
     expect(purgeBody).toContain("sessionsDir: getSessionDir()");
     expect(purgeBody).toContain("storePath: storePathForPurge");
-    // 3. Resets in-memory stats
-    expect(purgeBody).toContain("sessionStats.calls = {}");
-    expect(purgeBody).toContain("sessionStats.sessionStart = Date.now()");
+    // 3. Resets the calling project's in-memory stats (per-project buckets)
+    expect(purgeBody).toContain("resetStatsFor()");
     // 4. Confirms with list of deleted items
     expect(purgeBody).toContain("Purged:");
   });
@@ -2964,7 +2967,7 @@ describe("FS read instrumentation", () => {
 
   test("parses __CM_FS__ from stderr and adds to bytesSandboxed", () => {
     expect(serverSrc).toContain("__CM_FS__:(\\d+)");
-    expect(serverSrc).toContain("sessionStats.bytesSandboxed += parseInt(fsMatch[1])");
+    expect(serverSrc).toContain("statsFor().bytesSandboxed += parseInt(fsMatch[1])");
   });
 
   test("cleans __CM_FS__ marker from stderr output", () => {
@@ -2996,8 +2999,9 @@ describe("batch_execute FS read tracking", () => {
 
   test("parses __CM_FS__ from batch output and updates bytesSandboxed", () => {
     expect(serverSrc).toContain("/__CM_FS__:(\\d+)/g");
-    // Handler wires the FS-bytes callback to sessionStats; the runner strips/parses.
-    expect(serverSrc).toContain("sessionStats.bytesSandboxed += bytes");
+    // Handler wires the FS-bytes callback to the calling project's stats
+    // bucket; the runner strips/parses.
+    expect(serverSrc).toContain("statsFor().bytesSandboxed += bytes");
     expect(serverSrc).toContain("onFsBytes?.(cmdFsBytes)");
   });
 

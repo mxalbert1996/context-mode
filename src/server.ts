@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createRequire } from "node:module";
 import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, writeSync, renameSync, rmSync, mkdirSync, cpSync, statSync, symlinkSync, lstatSync, realpathSync } from "node:fs";
 import { spawnSync, type SpawnSyncOptions, type SpawnSyncReturns } from "node:child_process";
-import { join, dirname, resolve, sep, isAbsolute } from "node:path";
+import { join, dirname, resolve, sep, isAbsolute, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir, cpus, platform } from "node:os";
 import { request as httpsRequest } from "node:https";
@@ -236,6 +236,25 @@ export function emitSuppressionDiagnostic(
 /** Test-only: reset the one-shot emission flag so suites can re-exercise. */
 export function __resetSuppressionDiagnosticForTests(): void {
   __suppressionDiagnosticEmitted = false;
+}
+
+// Test-only seams for per-project singleton scoping (multi-location plugin
+// hosts): drive the stats accounting, the fetch-index path, and read/reset
+// the active project's bucket under withProjectDirOverride.
+export type { SessionStats };
+export function __statsForTests(): SessionStats {
+  return statsFor();
+}
+export function __resetStatsForTests(): void {
+  resetStatsFor();
+}
+export function __trackResponseForTests(toolName: string, response: ToolResult): ToolResult {
+  return trackResponse(toolName, response);
+}
+export function __indexFetchedForTests(
+  f: Parameters<typeof indexFetched>[0],
+): IndexedFetchResult {
+  return indexFetched(f);
 }
 
 /**
@@ -786,16 +805,63 @@ function getStore(): ContentStore {
 // Session stats — track context consumption per tool
 // ─────────────────────────────────────────────────────────
 
-const sessionStats = {
-  calls: {} as Record<string, number>,
-  bytesReturned: {} as Record<string, number>,
-  bytesIndexed: 0,
-  bytesSandboxed: 0, // network I/O consumed inside sandbox (never enters context)
-  cacheHits: 0,
-  cacheMisses: 0, // ctx_fetch_and_index calls that bypassed the TTL cache
-  cacheBytesSaved: 0, // bytes avoided by TTL cache hits
-  sessionStart: Date.now(),
+type SessionStats = {
+  calls: Record<string, number>;
+  bytesReturned: Record<string, number>;
+  bytesIndexed: number;
+  /** network I/O consumed inside sandbox (never enters context) */
+  bytesSandboxed: number;
+  cacheHits: number;
+  /** ctx_fetch_and_index calls that bypassed the TTL cache */
+  cacheMisses: number;
+  /** bytes avoided by TTL cache hits */
+  cacheBytesSaved: number;
+  sessionStart: number;
 };
+
+function makeSessionStats(): SessionStats {
+  return {
+    calls: {},
+    bytesReturned: {},
+    bytesIndexed: 0,
+    bytesSandboxed: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    cacheBytesSaved: 0,
+    sessionStart: Date.now(),
+  };
+}
+
+// Per-project buckets, keyed by the active withProjectDirOverride context —
+// multi-location plugin hosts run one project's tool calls per override, so
+// each project's ctx_stats must see only its own counters and one project's
+// ctx_purge must not reset another's. No override → the single "" bucket:
+// the stdio MCP child serves one project per process, exactly the
+// pre-scoping behavior.
+const _statsBuckets = new Map<string, SessionStats>();
+
+function statsFor(): SessionStats {
+  const key = projectDirOverride.getStore()?.projectDir ?? "";
+  let stats = _statsBuckets.get(key);
+  if (!stats) {
+    stats = makeSessionStats();
+    _statsBuckets.set(key, stats);
+  }
+  return stats;
+}
+
+/** Reset the CALLING project's in-memory stats (ctx_purge scope:'project'). */
+function resetStatsFor(): void {
+  const stats = statsFor();
+  stats.calls = {};
+  stats.bytesReturned = {};
+  stats.bytesIndexed = 0;
+  stats.bytesSandboxed = 0;
+  stats.cacheHits = 0;
+  stats.cacheMisses = 0;
+  stats.cacheBytesSaved = 0;
+  stats.sessionStart = Date.now();
+}
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -942,9 +1008,10 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
     (sum, c) => sum + Buffer.byteLength(c.text),
     0,
   );
-  sessionStats.calls[toolName] = (sessionStats.calls[toolName] || 0) + 1;
-  sessionStats.bytesReturned[toolName] =
-    (sessionStats.bytesReturned[toolName] || 0) + bytes;
+  const stats = statsFor();
+  stats.calls[toolName] = (stats.calls[toolName] || 0) + 1;
+  stats.bytesReturned[toolName] =
+    (stats.bytesReturned[toolName] || 0) + bytes;
 
   // Persist a sidecar JSON snapshot for the statusline — read at ~3-5 Hz by
   // bin/statusline.mjs (and any external dashboard) so they don't have to
@@ -980,7 +1047,7 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
 }
 
 function trackIndexed(bytes: number, source: string = "unknown"): void {
-  sessionStats.bytesIndexed += bytes;
+  statsFor().bytesIndexed += bytes;
   persistStats();
   // D2 Phase 5/7 — index-write event emission. `bytes_avoided` because
   // these are bytes that would have flooded context if the user had
@@ -1050,6 +1117,7 @@ function persistStats(): void {
   const now = Date.now();
   if (now - _lastStatsPersist < STATS_PERSIST_THROTTLE_MS) return;
   _lastStatsPersist = now;
+  const sessionStats = statsFor();
 
   try {
     const totalReturned = Object.values(sessionStats.bytesReturned).reduce(
@@ -1860,7 +1928,7 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
       // Parse sandbox network metrics from stderr
       const netMatch = result.stderr?.match(/__CM_NET__:(\d+)/);
       if (netMatch) {
-        sessionStats.bytesSandboxed += parseInt(netMatch[1]);
+        statsFor().bytesSandboxed += parseInt(netMatch[1]);
         // Clean the metric line from stderr
         result.stderr = result.stderr.replace(/\n?__CM_NET__:\d+\n?/g, "");
       }
@@ -1868,7 +1936,7 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
       // Parse sandbox FS read metrics from stderr
       const fsMatch = result.stderr?.match(/__CM_FS__:(\d+)/);
       if (fsMatch) {
-        sessionStats.bytesSandboxed += parseInt(fsMatch[1]);
+        statsFor().bytesSandboxed += parseInt(fsMatch[1]);
         result.stderr = result.stderr.replace(/\n?__CM_FS__:\d+\n?/g, "");
       }
 
@@ -3792,15 +3860,27 @@ export function describeRung(rung: string): string {
 
 /**
  * Per-project store holding every fetched document whole, plus every block
- * with its content/template label. Lives beside the FTS content DB so the
+ * with its content/template label. Lives beside the project's FTS content DB
+ * (same directory, filename derived from the same project hash) so the
  * existing cleanup and purge sweeps reach it.
+ *
+ * ONE store PER PROJECT: a single shared instance would return one project's
+ * fetched pages as another project's relabel set — cross-project content
+ * leakage into the other project's index (multi-location plugin hosts). The
+ * legacy shared `fetch-pages.db` (pre-per-project-scoping) is left in place
+ * on disk, unused.
  */
-let _pageStore: PageStore | null = null;
+const _pageStores = new Map<string, PageStore>();
 function getPageStore(): PageStore {
-  if (!_pageStore) {
-    _pageStore = new PageStore(join(dirname(getStorePath()), "fetch-pages.db"));
+  const storePath = getStorePath();
+  let pageStore = _pageStores.get(storePath);
+  if (!pageStore) {
+    pageStore = new PageStore(
+      join(dirname(storePath), `${basename(storePath, ".db")}-fetch-pages.db`),
+    );
+    _pageStores.set(storePath, pageStore);
   }
-  return _pageStore;
+  return pageStore;
 }
 
 /**
@@ -4041,8 +4121,8 @@ EXAMPLE: ctx_fetch_and_index(
       }
       const v = r.value;
       if (v.kind === "cached") {
-        sessionStats.cacheHits++;
-        sessionStats.cacheBytesSaved += v.estimatedBytes;
+        statsFor().cacheHits++;
+        statsFor().cacheBytesSaved += v.estimatedBytes;
         // D2 Phase 5/7 — cache-hit event emission. `bytes_avoided` is the
         // size of the cached payload that would have re-entered context
         // had the TTL window missed. Best-effort, off the hot path.
@@ -4063,7 +4143,7 @@ EXAMPLE: ctx_fetch_and_index(
         // Cache miss: the URL was not in the TTL window so we paid the
         // network round-trip + re-indexed. Counted here so ctx_stats can
         // report nominal cache_hit_rate alongside the existing hit metrics.
-        sessionStats.cacheMisses++;
+        statsFor().cacheMisses++;
         const indexed = indexFetched(v);
         // Honest refusal. A page whose every block already exists on other
         // pages of this host carried no page-specific content, and reporting
@@ -4310,7 +4390,7 @@ EXAMPLE: ctx_batch_execute(
           concurrency,
           nodeOptsPrefix,
           cwd,
-          onFsBytes: (bytes) => { sessionStats.bytesSandboxed += bytes; },
+          onFsBytes: (bytes) => { statsFor().bytesSandboxed += bytes; },
         },
         executor,
       );
@@ -4482,7 +4562,7 @@ server.registerTool(
         const sdb = new Database(sessionDbPath, { readonly: true });
         try {
           const engine = new AnalyticsEngine(sdb);
-          const report = engine.queryAll(sessionStats);
+          const report = engine.queryAll(statsFor());
           // MCP usage is read-only and cheap; only available when DB exists.
           const mcpUsage = engine.getMcpToolUsage();
           // Lifetime stats span every project's SessionDB + auto-memory dir
@@ -4606,7 +4686,7 @@ server.registerTool(
         // No session DB — build a minimal report from runtime stats only.
         // Lifetime still meaningful (other projects, auto-memory) so include it.
         const engine = new AnalyticsEngine(createMinimalDb());
-        const report = engine.queryAll(sessionStats);
+        const report = engine.queryAll(statsFor());
         const lifetime = getLifetimeStats({ sessionsDir: getSessionDir() });
         if (_detectedAdapter?.name === "Pi") {
           patchPiLifetimeFromStatsFiles(lifetime, getSessionDir());
@@ -4620,7 +4700,7 @@ server.registerTool(
     } catch {
       // Session DB not available or incompatible — build minimal report from runtime stats
       const engine = new AnalyticsEngine(createMinimalDb());
-      const report = engine.queryAll(sessionStats);
+      const report = engine.queryAll(statsFor());
       let lifetime;
       try { lifetime = getLifetimeStats({ sessionsDir: getSessionDir() }); } catch { /* never block ctx_stats */ }
       if (_detectedAdapter?.name === "Pi" && lifetime) {
@@ -5059,6 +5139,13 @@ EXAMPLE: ctx_purge(confirm: true, scope: "project")`,
         try { openStore.cleanup(); } catch { /* best effort */ }
         _stores.delete(storePathForPurge);
       }
+      // Same lock-release for the calling project's fetched-page archive —
+      // the file wipe itself is owned by purgeSession (deep module).
+      const openPageStore = _pageStores.get(storePathForPurge);
+      if (openPageStore) {
+        try { openPageStore.close(); } catch { /* best effort */ }
+        _pageStores.delete(storePathForPurge);
+      }
     }
 
     // FTS5 store: pass contentDir so purgeSession sweeps BOTH canonical
@@ -5087,14 +5174,9 @@ EXAMPLE: ctx_purge(confirm: true, scope: "project")`,
     // still belong to other sessions in the same project. Stats reset
     // happens ONLY when scope === "project".
     if (effectiveScope === "project") {
-      // Reset in-memory session stats
-      sessionStats.calls = {};
-      sessionStats.bytesReturned = {};
-      sessionStats.bytesIndexed = 0;
-      sessionStats.bytesSandboxed = 0;
-      sessionStats.cacheHits = 0;
-      sessionStats.cacheBytesSaved = 0;
-      sessionStats.sessionStart = Date.now();
+      // Reset the CALLING project's in-memory stats (other projects' buckets
+      // in a multi-location host are untouched)
+      resetStatsFor();
       deleted.push("session stats");
 
       // Also drop the persisted stats file so external readers see a fresh state
@@ -5379,6 +5461,10 @@ async function main() {
       try { openStore.close(); } catch { /* best effort */ }
     }
     _stores.clear();
+    for (const openPageStore of _pageStores.values()) {
+      try { openPageStore.close(); } catch { /* best effort */ }
+    }
+    _pageStores.clear();
     try { unlinkSync(CM_FS_PRELOAD); } catch { /* best effort */ }
     // Remove MCP readiness sentinel (#230)
     try { unlinkSync(mcpSentinel); } catch { /* best effort */ }
@@ -5446,16 +5532,17 @@ async function main() {
   try {
     const restored = restoreSessionStats(getSessionDbPath());
     if (restored) {
+      const stats = statsFor();
       for (const [tool, count] of Object.entries(restored.calls)) {
-        sessionStats.calls[tool] = count;
+        stats.calls[tool] = count;
       }
       for (const [tool, bytes] of Object.entries(restored.bytesReturned)) {
-        sessionStats.bytesReturned[tool] = bytes;
+        stats.bytesReturned[tool] = bytes;
       }
       // Anchor uptime_ms to the original session start so `/ctx-upgrade`
       // doesn't reset the "session age" the statusline shows.
       if (restored.sessionStart > 0) {
-        sessionStats.sessionStart = restored.sessionStart;
+        stats.sessionStart = restored.sessionStart;
       }
     }
   } catch { /* best effort — never block startup on a stats restore failure */ }

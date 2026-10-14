@@ -124,6 +124,8 @@ function pluginEntriesIncludeContextMode(value: unknown): boolean {
 export type PluginFlavor = "v1" | "v2";
 
 export type ActivationEntry = {
+  /** Unique id for this activation scope (one v2 setup() call or v1 server() call). */
+  activationId: string;
   flavor: PluginFlavor;
   claimedAt: number;
   /**
@@ -137,8 +139,14 @@ export type ActivationEntry = {
 };
 
 export type PluginGlobalState = {
-  /** Hybrid-host activation registry, keyed by plugin id + normalized project dir. */
-  activations: Map<string, ActivationEntry>;
+  /**
+   * Hybrid-host activation registry, keyed by normalized project dir. A
+   * project key may hold MULTIPLE concurrent entries: OpenCode v2 runs one
+   * setup() per location/scope in a multi-location server process, so every
+   * v2 scope claims its own entry. Cross-flavor first-wins is enforced by
+   * the guards in plugin.ts (a v1 claim blocks, v2-vs-v2 never does).
+   */
+  activations: Map<string, ActivationEntry[]>;
   /** Keys of one-time (setup/degradation/duplicate) logs already emitted. */
   loggedOnce: Set<string>;
   /** Dedupe map for hook error logs, keyed by hook|code|message → last-logged ms. */
@@ -200,9 +208,40 @@ export function peekConfirmedNativeTools(projectDir: string): boolean | undefine
   const g = globalThis as typeof globalThis & { [PLUGIN_STATE_KEY]?: PluginGlobalState };
   const state = g[PLUGIN_STATE_KEY]; // deliberately does NOT create the state
   if (!state) return undefined;
-  const entry = state.activations.get(normalizeProjectKey(projectDir));
-  if (!entry) return false;
-  return entry.nativeToolsConfirmed === true;
+  const entries = state.activations.get(normalizeProjectKey(projectDir));
+  if (!entries || entries.length === 0) return false;
+  return entries.some((entry) => entry.nativeToolsConfirmed === true);
+}
+
+let activationSeq = 0;
+
+export function claimActivation(
+  state: PluginGlobalState,
+  projectKey: string,
+  flavor: PluginFlavor,
+): ActivationEntry {
+  const entry: ActivationEntry = {
+    activationId: `act-${++activationSeq}-${Date.now().toString(36)}`,
+    flavor,
+    claimedAt: Date.now(),
+    nativeToolsConfirmed: flavor === "v1",
+  };
+  const existing = state.activations.get(projectKey);
+  if (existing) existing.push(entry);
+  else state.activations.set(projectKey, [entry]);
+  return entry;
+}
+
+export function releaseActivation(
+  state: PluginGlobalState,
+  projectKey: string,
+  entry: ActivationEntry,
+): void {
+  const existing = state.activations.get(projectKey);
+  if (!existing) return;
+  const next = existing.filter((candidate) => candidate !== entry);
+  if (next.length === 0) state.activations.delete(projectKey);
+  else state.activations.set(projectKey, next);
 }
 
 /**

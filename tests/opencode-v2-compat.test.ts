@@ -11,8 +11,13 @@ import { fakeHome } from "./setup-home";
  *
  * Covers:
  *   (a) default export surface: { id, server (v1), setup (v2) } + named exports
- *   (b) hybrid-host activation guard: single activation per project per
- *       process, second entry is a noop, no duplicate SessionDB construction
+ *   (b) hybrid-host activation guard: cross-flavor first-wins per project
+ *       (v1 and v2 never double-claim one project; second v1 entry is a
+ *       noop, no duplicate SessionDB construction)
+ *   (b2) multi-location activation: OpenCode v2 runs setup() once per
+ *       location — every scope fully registers with its own claim and
+ *       cleanup, even when directory resolution collapses (regression:
+ *       the duplicate guard used to starve later locations of ctx_* tools)
  *   (c) full-native claim: native ctx_* tools registered via ToolEditor with
  *       correct names/JSON schemas/executables, execute-hook bridging
  *       (input replacement propagation, capture), session context routing
@@ -100,6 +105,10 @@ function makeV2Ctx(
      * non-array payload to exercise shape handling.
      */
     listTransform?: (listed: Array<{ id: string }>) => unknown;
+    /** Set ctx.location.directory instead of ctx.directory (real v2 hosts carry no top-level directory). */
+    viaLocation?: boolean;
+    /** Omit every directory field — simulates hosts with no per-location signal (cwd collapse). */
+    omitDirectory?: boolean;
   } = {},
 ) {
   const logs = opts.log ?? [];
@@ -150,7 +159,8 @@ function makeV2Ctx(
   };
 
   const ctx: Record<string, any> = {
-    directory: projectDir,
+    ...(opts.viaLocation ? { location: { directory: projectDir } } : {}),
+    ...(!opts.viaLocation && !opts.omitDirectory ? { directory: projectDir } : {}),
     client: {
       app: {
         log: async (o: { body?: LogEntry } & LogEntry) => {
@@ -346,7 +356,8 @@ describe("opencode v2 compatibility", () => {
       const registry = await getActivationRegistry();
       const keys = [...registry.keys()].filter((k) => k.includes("guard-v1-then-v2"));
       expect(keys).toHaveLength(1);
-      expect(registry.get(keys[0])?.flavor).toBe("v1");
+      expect(registry.get(keys[0])).toHaveLength(1);
+      expect(registry.get(keys[0])?.[0]?.flavor).toBe("v1");
     });
 
     it("setup() then server() for the same project → single DB init, server returns empty registration", async () => {
@@ -378,7 +389,7 @@ describe("opencode v2 compatibility", () => {
       const registry = await getActivationRegistry();
       const keys = [...registry.keys()].filter((k) => k.includes("guard-v2-then-v1"));
       expect(keys).toHaveLength(1);
-      expect(registry.get(keys[0])?.flavor).toBe("v2");
+      expect(registry.get(keys[0])?.[0]?.flavor).toBe("v2");
 
       (cleanup as () => void)?.();
     });
@@ -395,6 +406,111 @@ describe("opencode v2 compatibility", () => {
       const ctor = await getSessionDbCtor();
       expect(ctor.mock.calls.length).toBe(1);
       expect(logs.filter((l) => /already active via v1/.test(l.message ?? "")).length).toBe(1);
+    });
+  });
+
+  // ── (b2) Multi-location activation (OpenCode v2 runs setup per location) ──
+
+  describe("multi-location activation (per-scope registration)", () => {
+    it("second location's setup() fully registers (regression: duplicate guard starved later locations)", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const logs: LogEntry[] = [];
+
+      const hostA = makeV2Ctx(join(tempDir, "loc-a"), { log: logs, withSession: true });
+      const cleanupA = (await ContextModeSetup(hostA.ctx as any)) as unknown as () => Promise<void>;
+      const hostB = makeV2Ctx(join(tempDir, "loc-b"), { log: logs, withSession: true });
+      const cleanupB = (await ContextModeSetup(hostB.ctx as any)) as unknown as () => Promise<void>;
+
+      expect([...hostA.toolHooks.keys()].sort()).toEqual(["execute.after", "execute.before"]);
+      expect([...hostB.toolHooks.keys()].sort()).toEqual(["execute.after", "execute.before"]);
+      expect(hostA.addedTools.size).toBeGreaterThan(0);
+      expect(hostB.addedTools.size).toBe(hostA.addedTools.size);
+      expect(logs.some((l) => /already active via/.test(l.message ?? ""))).toBe(false);
+
+      // Two independent claims, two per-location DBs
+      const registry = await getActivationRegistry();
+      const keyA = [...registry.keys()].find((k) => k.includes("loc-a"));
+      const keyB = [...registry.keys()].find((k) => k.includes("loc-b"));
+      expect(registry.get(keyA!)).toHaveLength(1);
+      expect(registry.get(keyB!)).toHaveLength(1);
+      const ctor = await getSessionDbCtor();
+      expect(ctor.mock.calls.length).toBe(2);
+      const dbPathA = (ctor.mock.calls[0][0] as { dbPath: string }).dbPath;
+      const dbPathB = (ctor.mock.calls[1][0] as { dbPath: string }).dbPath;
+      expect(dbPathA).not.toBe(dbPathB);
+
+      // Cleanup releases only its own scope's claim
+      await cleanupA();
+      expect(registry.get(keyA!)).toBeUndefined();
+      expect(registry.get(keyB!)).toHaveLength(1);
+      await cleanupB();
+      expect(registry.get(keyB!)).toBeUndefined();
+    });
+
+    it("per-location project dir comes from ctx.location.directory (no top-level directory field)", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+
+      const hostA = makeV2Ctx(join(tempDir, "loc-res-a"), { viaLocation: true });
+      const hostB = makeV2Ctx(join(tempDir, "loc-res-b"), { viaLocation: true });
+      const cleanupA = (await ContextModeSetup(hostA.ctx as any)) as unknown as () => Promise<void>;
+      const cleanupB = (await ContextModeSetup(hostB.ctx as any)) as unknown as () => Promise<void>;
+
+      const ctor = await getSessionDbCtor();
+      expect(ctor.mock.calls.length).toBe(2);
+      const dbPathA = (ctor.mock.calls[0][0] as { dbPath: string }).dbPath;
+      const dbPathB = (ctor.mock.calls[1][0] as { dbPath: string }).dbPath;
+      expect(dbPathA).not.toBe(dbPathB);
+
+      await cleanupA();
+      await cleanupB();
+    });
+
+    it("setups with no directory signal at all (cwd collapse) still register — never starved", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const logs: LogEntry[] = [];
+
+      const hostA = makeV2Ctx(join(tempDir, "ignored-a"), { log: logs, omitDirectory: true });
+      const hostB = makeV2Ctx(join(tempDir, "ignored-b"), { log: logs, omitDirectory: true });
+      const cleanupA = (await ContextModeSetup(hostA.ctx as any)) as unknown as () => Promise<void>;
+      const cleanupB = (await ContextModeSetup(hostB.ctx as any)) as unknown as () => Promise<void>;
+
+      expect(hostA.addedTools.size).toBeGreaterThan(0);
+      expect(hostB.addedTools.size).toBeGreaterThan(0);
+      expect(logs.some((l) => /already active via/.test(l.message ?? ""))).toBe(false);
+
+      // Both scopes collapsed to the same (cwd) key but still coexist as entries
+      const registry = await getActivationRegistry();
+      expect(registry.size).toBe(1);
+      expect([...registry.values()][0]).toHaveLength(2);
+
+      await cleanupA();
+      expect([...registry.values()][0]).toHaveLength(1);
+      await cleanupB();
+      expect(registry.size).toBe(0);
+    });
+
+    it("two setups for the SAME project (two scopes) both register; claims coexist", async () => {
+      const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+      const projectDir = join(tempDir, "loc-same-project");
+
+      const hostA = makeV2Ctx(projectDir, { withSession: true });
+      const hostB = makeV2Ctx(projectDir, { withSession: true });
+      const cleanupA = (await ContextModeSetup(hostA.ctx as any)) as unknown as () => Promise<void>;
+      const cleanupB = (await ContextModeSetup(hostB.ctx as any)) as unknown as () => Promise<void>;
+
+      expect(hostA.addedTools.size).toBeGreaterThan(0);
+      expect(hostB.addedTools.size).toBeGreaterThan(0);
+
+      const registry = await getActivationRegistry();
+      const key = [...registry.keys()].find((k) => k.includes("loc-same-project"));
+      expect(key).toBeDefined();
+      expect(registry.get(key!)).toHaveLength(2);
+      expect(registry.get(key!)?.every((entry) => entry.nativeToolsConfirmed === true)).toBe(true);
+
+      await cleanupA();
+      expect(registry.get(key!)).toHaveLength(1);
+      await cleanupB();
+      expect(registry.get(key!)).toBeUndefined();
     });
   });
 
@@ -1417,7 +1533,7 @@ describe("opencode v2 compatibility", () => {
       (cleanup as () => void)?.();
     });
 
-    it("degradation logs are one-time per process (not per setup call)", async () => {
+    it("degradation logs are one-time per project scope — each location's setup logs its own", async () => {
       const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
       const logs: LogEntry[] = [];
 
@@ -1429,10 +1545,20 @@ describe("opencode v2 compatibility", () => {
       (b.ctx as any).client.app.log = async (o: any) => logs.push((o?.body ?? o) as LogEntry);
       (await ContextModeSetup(b.ctx as any))?.();
 
+      // Different locations → each logs its own degradation exactly once
       const sessionCtxLogs = logs.filter((l) =>
         /session context injection unavailable \(no ctx\.session\.hook\('context'\)\)/.test(l.message ?? ""),
       );
-      expect(sessionCtxLogs.length).toBe(1); // logged once, not once per project
+      expect(sessionCtxLogs.length).toBe(2);
+
+      // Same project again → still deduped (logOnce key is project-scoped)
+      const c = makeV2Ctx(join(tempDir, "probe-onetime-a"));
+      (c.ctx as any).client.app.log = async (o: any) => logs.push((o?.body ?? o) as LogEntry);
+      (await ContextModeSetup(c.ctx as any))?.();
+      const after = logs.filter((l) =>
+        /session context injection unavailable \(no ctx\.session\.hook\('context'\)\)/.test(l.message ?? ""),
+      );
+      expect(after.length).toBe(2);
     });
 
     it("preCompact tracks the compaction registration: degraded without a session surface, kept when registered", async () => {
@@ -1496,8 +1622,8 @@ describe("opencode v2 compatibility", () => {
       const registry = await getActivationRegistry();
       const keys = [...registry.keys()].filter((k) => k.includes("list-confirm-complete"));
       expect(keys).toHaveLength(1);
-      expect(registry.get(keys[0])?.flavor).toBe("v2");
-      expect(registry.get(keys[0])?.nativeToolsConfirmed).toBe(true);
+      expect(registry.get(keys[0])?.[0]?.flavor).toBe("v2");
+      expect(registry.get(keys[0])?.[0]?.nativeToolsConfirmed).toBe(true);
 
       await cleanup();
     });
@@ -1557,7 +1683,7 @@ describe("opencode v2 compatibility", () => {
       const registry = await getActivationRegistry();
       const keys = [...registry.keys()].filter((k) => k.includes("list-absent"));
       expect(keys).toHaveLength(1);
-      expect(registry.get(keys[0])?.nativeToolsConfirmed).toBe(true);
+      expect(registry.get(keys[0])?.[0]?.nativeToolsConfirmed).toBe(true);
 
       await cleanup();
     });
@@ -1577,7 +1703,7 @@ describe("opencode v2 compatibility", () => {
       const registry = await getActivationRegistry();
       const keys = [...registry.keys()].filter((k) => k.includes("list-probe-unusable"));
       expect(keys).toHaveLength(1);
-      expect(registry.get(keys[0])?.nativeToolsConfirmed).toBe(true);
+      expect(registry.get(keys[0])?.[0]?.nativeToolsConfirmed).toBe(true);
 
       await cleanup();
     });
@@ -1597,7 +1723,7 @@ describe("opencode v2 compatibility", () => {
       const registry = await getActivationRegistry();
       const keys = [...registry.keys()].filter((k) => k.includes("list-non-array"));
       expect(keys).toHaveLength(1);
-      expect(registry.get(keys[0])?.nativeToolsConfirmed).toBe(true);
+      expect(registry.get(keys[0])?.[0]?.nativeToolsConfirmed).toBe(true);
 
       expect(logs.some((l) => /unrecognized shape/.test(l.message ?? ""))).toBe(true);
 
@@ -1620,7 +1746,7 @@ describe("opencode v2 compatibility", () => {
       const registry = await getActivationRegistry();
       const keys = [...registry.keys()].filter((k) => k.includes("list-malformed-entries"));
       expect(keys).toHaveLength(1);
-      expect(registry.get(keys[0])?.nativeToolsConfirmed).toBe(true);
+      expect(registry.get(keys[0])?.[0]?.nativeToolsConfirmed).toBe(true);
 
       const warning = logs.find((l) => /unrecognized shape/.test(l.message ?? ""));
       expect(warning).toBeDefined();

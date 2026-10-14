@@ -45,6 +45,7 @@ import {
 } from "../../src/session/db.js";
 import { ROUTING_BLOCK } from "../../hooks/routing-block.mjs";
 import { sanitizeSchemaForStrictClients, resolveExecTimeout, AGY_DEFAULT_EXEC_TIMEOUT_MS, REGISTERED_CTX_TOOLS } from "../../src/server.js";
+import { PLATFORM_ENV_VARS } from "../../src/adapters/detect.js";
 import { stripJsonComments, parseJsonc } from "../../src/util/jsonc.js";
 
 // ─── Shared setup ───────────────────────────────────────────────────────────
@@ -1253,17 +1254,15 @@ describe("ctx_index: projectRoot path resolution (#365)", () => {
     // forced to consult IDEA_INITIAL_DIRECTORY. Issue #545 (v1.0.124): when a
     // host env var (Claude Code, Codex, etc.) leaks into this child,
     // detectPlatform() can pick that host, enter strict mode, and ban
-    // IDEA_INITIAL_DIRECTORY as a foreign var.
+    // IDEA_INITIAL_DIRECTORY as a foreign var. Registry-driven (every var in
+    // PLATFORM_ENV_VARS) — a prefix regex leaks BARE names like OPENCODE=1 or
+    // KILO=1 set by the host running the suite, misdetecting the platform.
     const cleanEnv = { ...process.env };
-    for (const key of Object.keys(cleanEnv)) {
-      if (
-        /^(CLAUDE|CODEX|GEMINI|VSCODE|CURSOR|OPENCODE|KILO|KIRO|PI|OMP|ZED|QWEN|KIMI|ANTIGRAVITY|OPENCLAW|COPILOT)_/.test(key) ||
-        key === "CONTEXT_MODE_PLATFORM" ||
-        key === "CONTEXT_MODE_PROJECT_DIR"
-      ) {
-        delete cleanEnv[key];
-      }
+    for (const [, entries] of PLATFORM_ENV_VARS) {
+      for (const v of entries) delete cleanEnv[v.name];
     }
+    delete cleanEnv.CONTEXT_MODE_PLATFORM;
+    delete cleanEnv.CONTEXT_MODE_PROJECT_DIR;
 
     const proc = spawn("node", [buildEntry], {
       stdio: ["pipe", "pipe", "pipe"],

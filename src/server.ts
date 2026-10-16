@@ -352,7 +352,7 @@ if (suppressMcpToolsForNativePluginHost && process.env.CONTEXT_MODE_EMBEDDED_PLU
   registerEmptyToolsListHandler(server);
 }
 
-type ToolContextOverride = { projectDir: string; sessionId?: string };
+type ToolContextOverride = { projectDir: string; sessionId?: string; echo?: boolean };
 const projectDirOverride = new AsyncLocalStorage<ToolContextOverride>();
 
 export async function withProjectDirOverride<T>(
@@ -1615,11 +1615,30 @@ function truncateCodeForEcho(code: string): string {
 }
 
 /**
+ * Opt-in gate for ALL execution echoes: the ctx_execute/ctx_execute_file
+ * source-code preamble, the ctx_batch_execute per-section `$ <command>` line,
+ * and the "## Commands" inventory. Precedence: an EXPLICIT CONTEXT_MODE_ECHO
+ * (any value, including "" → off; truthy = 1/true/yes/on) always wins;
+ * otherwise the per-location OpenCode v2 plugin option `echo`, threaded
+ * through the withProjectDirOverride AsyncLocalStorage by the plugin's
+ * native-tool wrapper. Default OFF.
+ */
+function echoEnabled(): boolean {
+  const raw = process.env.CONTEXT_MODE_ECHO;
+  if (raw !== undefined) {
+    return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+  }
+  return projectDirOverride.getStore()?.echo === true;
+}
+
+/**
  * Build the source-code preamble surfaced before tool stdout. Provenance
  * survives in indexed chunks (FTS5 sees the fenced block) so later
- * ctx_search hits remember what ran.
+ * ctx_search hits remember what ran. Returns "" when disabled (default) —
+ * every caller composes it as a plain prefix, so the empty case is a no-op.
  */
 function buildExecuteEcho(language: string, code: string, path?: string): string {
+  if (!echoEnabled()) return "";
   const header = path ? `path=${path}\n` : "";
   const fenced = `\`\`\`${language}\n${truncateCodeForEcho(code)}\n\`\`\``;
   return `${header}${fenced}\n\n`;
@@ -1634,6 +1653,7 @@ function formatCommandOutput(label: string, command: string, raw: string, onFsBy
     onFsBytes?.(cmdFsBytes);
     output = output.replace(/__CM_FS__:\d+\n?/g, "");
   }
+  if (!echoEnabled()) return `# ${label}\n\n${output}\n`;
   // Echo the executed command below the section heading so per-chunk
   // indexed content retains provenance for later ctx_search hits
   // (Issues #717 + #736).
@@ -4441,10 +4461,16 @@ EXAMPLE: ctx_batch_execute(
       // response itself documents intent, not just per-section echoes.
       // Placed before "## Indexed Sections" so it scans top-down with
       // the human asking "what just happened" (Issues #717 + #736).
-      const commandsInventory: string[] = ["## Commands", ""];
-      for (const c of commands) {
-        commandsInventory.push(`- ${c.label}: \`${truncateCommandForEcho(c.command)}\``);
-      }
+      // Opt-in via CONTEXT_MODE_ECHO; the trailing separator lives here
+      // so the off-path boundary is exactly `summary\n\n## Indexed Sections`.
+      const commandsInventory = echoEnabled()
+        ? [
+            "## Commands",
+            "",
+            ...commands.map((c) => `- ${c.label}: \`${truncateCommandForEcho(c.command)}\``),
+            "",
+          ]
+        : [];
 
       // Build section inventory — direct query by source_id (no FTS5 MATCH needed)
       const allSections = store.getChunksBySource(indexed.sourceId);
@@ -4472,7 +4498,6 @@ EXAMPLE: ctx_batch_execute(
           `Indexed ${indexed.totalChunks} sections. Searched ${queries.length} queries.`,
         "",
         ...commandsInventory,
-        "",
         ...inventory,
         "",
         ...queryResults,

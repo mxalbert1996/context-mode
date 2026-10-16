@@ -93,6 +93,12 @@ export type V2SetupContext = {
     project?: { directory?: string; canonical?: string };
   };
   project?: { directory?: string };
+  /**
+   * Plugin options from the host config (present on OpenCode v2 hosts —
+   * the promise adapter passes the plugin entry's options through). Read
+   * defensively; shape is host-defined.
+   */
+  options?: Record<string, unknown>;
   client?: PluginClient;
   app?: { name?: string; version?: string; channel?: string };
   tool?: {

@@ -489,6 +489,8 @@ Full configs: [`configs/cursor/hooks.json`](configs/cursor/hooks.json) | [`confi
 
 **Verify:** In the OpenCode session, type `ctx stats`. Context-mode tools should appear and respond.
 
+**Options:** On OpenCode v2, plugin options can opt in to execution echoes (source code before `ctx_execute`/`ctx_execute_file` stdout, `$ <command>` lines and the `## Commands` inventory in `ctx_batch_execute` summaries). Set the option named `echo` (boolean-ish: `true`/`"1"`/`"true"`/`"yes"`/`"on"`) on the plugin entry; an explicit `CONTEXT_MODE_ECHO` env var always wins.
+
 **Upgrade note:** If an existing config has BOTH `plugin: ["context-mode"]` AND `mcp.context-mode`, OpenCode will register zero `ctx_*` tools — the plugin path correctly suppresses MCP duplicates, but the legacy MCP entry confuses the loader. Run `context-mode upgrade` to remove the legacy `mcp.context-mode` entry; your other MCP servers are preserved. v1.0.140+ emits a stderr diagnostic with the same guidance when this happens.
 
 **Routing:** Hooks enforce routing programmatically via `tool.execute.before` and `tool.execute.after`, and the plugin injects the full routing guidance (condensed block + complete AGENTS.md mandate) into the system prompt on every model dispatch — no copied AGENTS.md is required. The `experimental.session.compacting` hook builds resume snapshots when the conversation compacts. The `experimental.chat.system.transform` hook injects the routing block and prior-session snapshots at session start, enabling session continuity across restarts. The `chat.message` hook captures user prompts and decisions (UserPromptSubmit equivalent).
@@ -1594,6 +1596,12 @@ That blocks loopback + RFC1918 + ULA in addition to the always-blocked ranges. U
 | Variable | Default | Purpose |
 |---|---|---|
 | `CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY` | `10` | Cadence (in tool calls) at which the PreToolUse hook re-injects the "wrap large external-MCP payloads in `ctx_execute`" guidance. The original implementation ([#529](https://github.com/mxalbert1996/context-mode/pull/529)) fired only once per session, which got lost after context compaction in MCP-heavy sessions (e.g. 50+ Jira/Slack/Notion calls — see [#567](https://github.com/mxalbert1996/context-mode/issues/567) follow-up). The default re-fires every 10th matching call, keeping the guidance in the model's recent window. Range `[1, 100]`; invalid values fall back to `10`. Set to `1` for "every call" (most aggressive — adds ~250 tokens/call) or to a larger value for less frequent reminders. |
+
+### Echo environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CONTEXT_MODE_ECHO` | off | Opt-in echo of what was executed into tool results for audit/provenance ([#717](https://github.com/mksglu/context-mode/issues/717), [#736](https://github.com/mksglu/context-mode/issues/736)): `ctx_execute`/`ctx_execute_file` prepend the source code (≤2000 chars) as a fenced block, and `ctx_batch_execute` adds a per-section `$ <command>` line (≤500 chars) plus a `## Commands` inventory to the summary. Truthy values: `1`/`true`/`yes`/`on`. On OpenCode v2 the same switch can be enabled via the plugin option `echo` (see the OpenCode install notes). |
 
 ## Contributing
 

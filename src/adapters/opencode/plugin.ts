@@ -672,6 +672,13 @@ interface PluginRuntime {
   autoInjectionMod: { buildAutoInjection: (events: unknown) => string };
   captureAgentsMd: (sessionId: string) => void;
   buildNativeTools: () => Promise<Record<string, NativeToolDefinition>>;
+  /**
+   * Per-location echo opt-in parsed from the v2 plugin options (`echo` /
+   * aliases). The native-tool wrapper threads it into the
+   * withProjectDirOverride context so one location's option never leaks
+   * into another; an explicit CONTEXT_MODE_ECHO env var still wins.
+   */
+  pluginEcho: boolean;
   logger: (message?: string, extra?: PluginClientAppLogBodyExtra) => Promise<void>;
   safeLog: (message?: string, extra?: PluginClientAppLogBodyExtra) => Promise<void>;
   logHookError: (hookName: string, err: unknown, sessionId?: string) => void;
@@ -696,6 +703,7 @@ async function createPluginRuntime(
   ctx: PluginContext,
   projectDirOverride?: string,
   adapterOptions?: OpenCodeAdapterOptions,
+  pluginEcho = false,
 ): Promise<PluginRuntime> {
   // Resolve build dir from compiled JS location
   const platform = getPlatform();
@@ -898,7 +906,7 @@ async function createPluginRuntime(
             }
           }
 
-          const result = await mod.withProjectDirOverride({ projectDir: project, sessionId: toolCtx.sessionID }, async () =>
+          const result = await mod.withProjectDirOverride({ projectDir: project, sessionId: toolCtx.sessionID, echo: pluginEcho }, async () =>
             registered.handler(parsedArgs),
           );
 
@@ -937,6 +945,7 @@ async function createPluginRuntime(
     autoInjectionMod,
     captureAgentsMd,
     buildNativeTools,
+    pluginEcho,
     logger,
     safeLog,
     closed: false,
@@ -2188,10 +2197,28 @@ async function createContextModePlugin(ctx: PluginContext) {
  * plugin reload can re-claim without double-registering or leaking the old
  * DB.
  */
+/**
+ * Parse the v2 plugin options' echo opt-in (`echo`; boolean-ish:
+ * true/"1"/"true"/"yes"/"on"). Pure — the result is stored per-location on
+ * the PluginRuntime and threaded through the native-tool wrapper's
+ * withProjectDirOverride, so it never mutates process-wide state and an
+ * explicit CONTEXT_MODE_ECHO env var still wins in echoEnabled().
+ */
+function parseEchoPluginOption(options: Record<string, unknown> | undefined): boolean {
+  try {
+    const raw = options?.echo;
+    return raw === true ||
+      (typeof raw === "string" && ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase()));
+  } catch {
+    return false;
+  }
+}
+
 async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
   const state = getPluginGlobalState();
   const projectDir = resolveV2ProjectDir(ctx);
   const projectKey = normalizeProjectKey(projectDir);
+  const pluginEcho = parseEchoPluginOption(ctx?.options);
 
   // Hybrid-host guard — CROSS-FLAVOR only. A v1 claim for this project means
   // server() already registered through the host's own hook system, so a v2
@@ -2257,6 +2284,7 @@ async function setupV2(ctx: V2SetupContext): Promise<(() => void) | void> {
       {
         sessionContextDegraded: !sessionHookSurface,
       },
+      pluginEcho,
     );
     rt = activeRt;
     const handlers = createSharedHandlers(activeRt);

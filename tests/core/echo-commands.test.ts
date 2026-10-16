@@ -16,10 +16,15 @@
  *      code before stdout
  *   5. ctx_execute_file prepends a header naming the path + a fenced
  *      `${language}` block carrying the source code before stdout
+ *   6. ctx_batch_execute summary carries a "## Commands" inventory (same as 2,
+ *      over the live server)
+ *
+ * ALL echoes are OPT-IN via CONTEXT_MODE_ECHO (1/true/yes/on), default off.
  *
  * Tests 1-3 hit the pure runBatchCommands/formatCommandOutput surface (fast,
- * no spawn). Tests 4-5 hit the live MCP server over JSON-RPC (covers the
- * tool handler wiring end-to-end).
+ * no spawn — env toggled in-process). Tests 4-6 hit the live MCP server over
+ * JSON-RPC (covers the tool handler wiring end-to-end), each once with the
+ * echo off (default) and once with CONTEXT_MODE_ECHO=1.
  *
  * Run: npx vitest run tests/core/echo-commands.test.ts
  */
@@ -51,70 +56,114 @@ function mkMockExecutor(
 
 const NOOP_PREFIX = "";
 
+/**
+ * Toggle CONTEXT_MODE_ECHO for in-process runBatchCommands/formatCommandOutput
+ * calls (behaviours 1-3 read the env at call time) and restore it after.
+ */
+async function withEchoEnv<T>(value: string | undefined, fn: () => Promise<T> | T): Promise<T> {
+  const prev = process.env.CONTEXT_MODE_ECHO;
+  if (value === undefined) delete process.env.CONTEXT_MODE_ECHO;
+  else process.env.CONTEXT_MODE_ECHO = value;
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.CONTEXT_MODE_ECHO;
+    else process.env.CONTEXT_MODE_ECHO = prev;
+  }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
-// Behaviour 1 — runBatchCommands echoes `$ <command>` in each section
+// Behaviour 1 — runBatchCommands echoes `$ <command>` in each section (opt-in)
 // ════════════════════════════════════════════════════════════════════════════
 describe("issue #736 — ctx_batch_execute echoes the ran command per section", () => {
-  test("serial path: each section header carries `$ <command>` below `# <label>`", async () => {
+  test("default: serial path sections carry `# <label>` + output, no `$ ` line", async () => {
+    const cmds: BatchCommand[] = [
+      { label: "alpha", command: "echo alpha" },
+      { label: "bravo", command: "echo bravo" },
+    ];
+    const exec = mkMockExecutor(() => ({ stdout: "ok\n" }));
+    await withEchoEnv(undefined, async () => {
+      const { outputs } = await runBatchCommands(
+        cmds,
+        { timeout: 5000, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX },
+        exec,
+      );
+      expect(outputs).toHaveLength(2);
+      for (let i = 0; i < cmds.length; i++) {
+        expect(outputs[i]).toContain(`# ${cmds[i].label}`);
+        expect(outputs[i]).toContain("ok");
+        expect(outputs[i]).not.toContain(`$ ${cmds[i].command}`);
+        expect(outputs[i].split("\n").some((l) => l.startsWith("$ "))).toBe(false);
+      }
+    });
+  });
+
+  test("CONTEXT_MODE_ECHO=1: serial path: each section header carries `$ <command>` below `# <label>`", async () => {
     const cmds: BatchCommand[] = [
       { label: "git commits mentioning niri in messages", command: "git log --all --grep='niri' --regexp-ignore-case" },
       { label: "git pickaxe niri content changes", command: "git log --all -i -S'niri' --date=short" },
       { label: "git changed paths containing niri", command: "git log --all -- '**/*niri*'" },
     ];
     const exec = mkMockExecutor(() => ({ stdout: "ok\n" }));
-    const { outputs } = await runBatchCommands(
-      cmds,
-      { timeout: 5000, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX },
-      exec,
-    );
+    await withEchoEnv("1", async () => {
+      const { outputs } = await runBatchCommands(
+        cmds,
+        { timeout: 5000, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX },
+        exec,
+      );
 
-    expect(outputs).toHaveLength(3);
-    for (let i = 0; i < cmds.length; i++) {
-      expect(outputs[i]).toContain(`# ${cmds[i].label}`);
-      expect(outputs[i]).toContain(`$ ${cmds[i].command}`);
-    }
+      expect(outputs).toHaveLength(3);
+      for (let i = 0; i < cmds.length; i++) {
+        expect(outputs[i]).toContain(`# ${cmds[i].label}`);
+        expect(outputs[i]).toContain(`$ ${cmds[i].command}`);
+      }
+    });
   });
 
-  test("parallel path: each section header carries `$ <command>` below `# <label>`", async () => {
+  test("CONTEXT_MODE_ECHO=1: parallel path: each section header carries `$ <command>` below `# <label>`", async () => {
     const cmds: BatchCommand[] = [
       { label: "alpha", command: "echo alpha" },
       { label: "bravo", command: "echo bravo" },
       { label: "charlie", command: "echo charlie" },
     ];
     const exec = mkMockExecutor(() => ({ stdout: "ok\n" }));
-    const { outputs } = await runBatchCommands(
-      cmds,
-      { timeout: 5000, concurrency: 3, nodeOptsPrefix: NOOP_PREFIX },
-      exec,
-    );
-    for (let i = 0; i < cmds.length; i++) {
-      expect(outputs[i]).toContain(`# ${cmds[i].label}`);
-      expect(outputs[i]).toContain(`$ ${cmds[i].command}`);
-    }
+    await withEchoEnv("1", async () => {
+      const { outputs } = await runBatchCommands(
+        cmds,
+        { timeout: 5000, concurrency: 3, nodeOptsPrefix: NOOP_PREFIX },
+        exec,
+      );
+      for (let i = 0; i < cmds.length; i++) {
+        expect(outputs[i]).toContain(`# ${cmds[i].label}`);
+        expect(outputs[i]).toContain(`$ ${cmds[i].command}`);
+      }
+    });
   });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// Behaviour 3 — Long commands are truncated with `…`
+// Behaviour 3 — Long commands are truncated with `…` (echo on)
 // ════════════════════════════════════════════════════════════════════════════
 describe("issue #736 — pathological heredoc commands truncate cleanly", () => {
   test("commands longer than 500 chars are clipped with an ellipsis marker", async () => {
     const payload = "x".repeat(2000);
     const heredoc = `node - <<'NODE'\n${payload}\nNODE`;
     const exec = mkMockExecutor(() => ({ stdout: "ok\n" }));
-    const { outputs } = await runBatchCommands(
-      [{ label: "heredoc", command: heredoc }],
-      { timeout: 5000, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX },
-      exec,
-    );
-    const section = outputs[0];
-    // Must still echo a `$ ` line but bounded in length and end with …
-    const dollarLine = section.split("\n").find((l) => l.startsWith("$ "))!;
-    expect(dollarLine).toBeDefined();
-    expect(dollarLine.length).toBeLessThan(600); // 500 budget + `$ ` + ellipsis
-    expect(dollarLine.endsWith("…")).toBe(true);
-    // Sanity: full 2000-char payload is NOT inlined verbatim
-    expect(section).not.toContain(payload);
+    await withEchoEnv("1", async () => {
+      const { outputs } = await runBatchCommands(
+        [{ label: "heredoc", command: heredoc }],
+        { timeout: 5000, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX },
+        exec,
+      );
+      const section = outputs[0];
+      // Must still echo a `$ ` line but bounded in length and end with …
+      const dollarLine = section.split("\n").find((l) => l.startsWith("$ "))!;
+      expect(dollarLine).toBeDefined();
+      expect(dollarLine.length).toBeLessThan(600); // 500 budget + `$ ` + ellipsis
+      expect(dollarLine.endsWith("…")).toBe(true);
+      // Sanity: full 2000-char payload is NOT inlined verbatim
+      expect(section).not.toContain(payload);
+    });
   });
 });
 
@@ -184,7 +233,7 @@ async function initServer(proc: ChildProcess): Promise<void> {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Behaviour 4 — ctx_execute echoes the source code before stdout
+// Behaviour 4 — ctx_execute echoes the source code before stdout (opt-in)
 // ════════════════════════════════════════════════════════════════════════════
 describe("issue #717 — ctx_execute echoes the language + code it ran", () => {
   let projectDir: string;
@@ -195,8 +244,31 @@ describe("issue #717 — ctx_execute echoes the language + code it ran", () => {
     rmSync(projectDir, { recursive: true, force: true });
   });
 
-  test("success path: response carries fenced ```javascript block with the exact code, before stdout", async () => {
-    const proc = spawnServer({ CLAUDE_PROJECT_DIR: projectDir });
+  test("default: no fenced block — stdout only", async () => {
+    // Empty-string env forces the off default even if the host env sets it
+    const proc = spawnServer({ CLAUDE_PROJECT_DIR: projectDir, CONTEXT_MODE_ECHO: "" });
+    try {
+      await initServer(proc);
+      const marker = `EXEC-MARKER-${Math.random().toString(36).slice(2)}`;
+      const code = `console.log("${marker}");`;
+      const resp = await awaitRpc(proc, 100, {
+        jsonrpc: "2.0", id: 100, method: "tools/call",
+        params: { name: "ctx_execute", arguments: { language: "javascript", code } },
+      });
+      expect(resp?.error).toBeUndefined();
+      expect(resp?.result?.isError ?? false).toBe(false);
+      const text = resp?.result?.content?.[0]?.text ?? "";
+      expect(text).toContain(marker);
+      expect(text).not.toContain("```javascript");
+      expect(text).not.toContain(code);
+      expect(text.trim()).toBe(marker);
+    } finally {
+      try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+    }
+  }, 30_000);
+
+  test("CONTEXT_MODE_ECHO=1: response carries fenced ```javascript block with the exact code, before stdout", async () => {
+    const proc = spawnServer({ CLAUDE_PROJECT_DIR: projectDir, CONTEXT_MODE_ECHO: "1" });
     try {
       await initServer(proc);
       const marker = `EXEC-MARKER-${Math.random().toString(36).slice(2)}`;
@@ -223,9 +295,8 @@ describe("issue #717 — ctx_execute echoes the language + code it ran", () => {
 
 // ════════════════════════════════════════════════════════════════════════════
 // Behaviour 6 — ctx_batch_execute summary carries a "## Commands" inventory
-//               so the response itself (not just per-section echoes) lists
-//               every command the agent ran. Placed before "## Indexed
-//               Sections" per the issue templates.
+//               (opt-in). When on, it is placed before "## Indexed Sections"
+//               per the issue templates.
 // ════════════════════════════════════════════════════════════════════════════
 describe("issue #736 — ctx_batch_execute summary includes a Commands inventory", () => {
   let projectDir: string;
@@ -236,8 +307,39 @@ describe("issue #736 — ctx_batch_execute summary includes a Commands inventory
     rmSync(projectDir, { recursive: true, force: true });
   });
 
-  test("response carries `## Commands` listing each `- <label>: \\`<command>\\`` before `## Indexed Sections`", async () => {
-    const proc = spawnServer({ CLAUDE_PROJECT_DIR: projectDir });
+  test("default: no `## Commands` inventory — `## Indexed Sections` only", async () => {
+    // Empty-string env forces the off default even if the host env sets it
+    const proc = spawnServer({ CLAUDE_PROJECT_DIR: projectDir, CONTEXT_MODE_ECHO: "" });
+    try {
+      await initServer(proc);
+      const resp = await awaitRpc(proc, 102, {
+        jsonrpc: "2.0", id: 102, method: "tools/call",
+        params: {
+          name: "ctx_batch_execute",
+          arguments: {
+            commands: [
+              { label: "alpha", command: "echo alpha-output" },
+            ],
+            queries: ["alpha"],
+          },
+        },
+      });
+      expect(resp?.error).toBeUndefined();
+      const text = resp?.result?.content?.[0]?.text ?? "";
+
+      expect(text).not.toContain("## Commands");
+      expect(text).not.toMatch(/- alpha: `echo alpha-output`/);
+      expect(text).toContain("## Indexed Sections");
+      // Off-path boundary is exactly `summary\n\n## Indexed Sections` — no
+      // double blank line where the inventory would separate
+      expect(text).toMatch(/Searched \d+ queries\.\n\n## Indexed Sections/);
+    } finally {
+      try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+    }
+  }, 30_000);
+
+  test("CONTEXT_MODE_ECHO=1: response carries `## Commands` listing each `- <label>: \\`<command>\\`` before `## Indexed Sections`", async () => {
+    const proc = spawnServer({ CLAUDE_PROJECT_DIR: projectDir, CONTEXT_MODE_ECHO: "1" });
     try {
       await initServer(proc);
       const resp = await awaitRpc(proc, 102, {
@@ -275,7 +377,7 @@ describe("issue #736 — ctx_batch_execute summary includes a Commands inventory
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// Behaviour 5 — ctx_execute_file echoes path + code before stdout
+// Behaviour 5 — ctx_execute_file echoes path + code before stdout (opt-in)
 // ════════════════════════════════════════════════════════════════════════════
 describe("issue #717 — ctx_execute_file echoes the path + code it ran", () => {
   let projectDir: string;
@@ -289,8 +391,32 @@ describe("issue #717 — ctx_execute_file echoes the path + code it ran", () => 
     rmSync(projectDir, { recursive: true, force: true });
   });
 
-  test("success path: response carries `path=<file>` + fenced code block before stdout", async () => {
-    const proc = spawnServer({ CLAUDE_PROJECT_DIR: projectDir });
+  test("default: no path= header, no fenced block — stdout only", async () => {
+    // Empty-string env forces the off default even if the host env sets it
+    const proc = spawnServer({ CLAUDE_PROJECT_DIR: projectDir, CONTEXT_MODE_ECHO: "" });
+    try {
+      await initServer(proc);
+      const marker = `FILE-MARKER-${Math.random().toString(36).slice(2)}`;
+      const code = `console.log("${marker}", FILE_CONTENT.split("\\n").length);`;
+      const resp = await awaitRpc(proc, 101, {
+        jsonrpc: "2.0", id: 101, method: "tools/call",
+        params: { name: "ctx_execute_file", arguments: { path: "sample.txt", language: "javascript", code } },
+      });
+      expect(resp?.error).toBeUndefined();
+      expect(resp?.result?.isError ?? false).toBe(false);
+      const text = resp?.result?.content?.[0]?.text ?? "";
+      expect(text).toContain(marker);
+      expect(text).not.toMatch(/path=/);
+      expect(text).not.toContain("```javascript");
+      expect(text).not.toContain(code);
+      expect(text.trim()).toBe(`${marker} 4`);
+    } finally {
+      try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+    }
+  }, 30_000);
+
+  test("CONTEXT_MODE_ECHO=1: response carries `path=<file>` + fenced code block before stdout", async () => {
+    const proc = spawnServer({ CLAUDE_PROJECT_DIR: projectDir, CONTEXT_MODE_ECHO: "1" });
     try {
       await initServer(proc);
       const marker = `FILE-MARKER-${Math.random().toString(36).slice(2)}`;

@@ -28,6 +28,9 @@ import { fakeHome } from "./setup-home";
  *       fallback retained for setups that fail to claim
  *   (f) detailed error logging in the hook catch-alls (client log + file
  *       sink; stderr is the last-resort when the sink is unavailable)
+ *   (g) v2 plugin echo option: per-location threading (one location's
+ *       option never leaks into another), reload-disable, failed-setup
+ *       residue, and explicit-env-var precedence (any value wins)
  *
  * SessionDB is wrapped in a constructor spy (delegating to the real class) so
  * duplicate DB init is detectable while runtime behavior stays real.
@@ -2373,6 +2376,133 @@ describe("opencode v2 compatibility", () => {
       await handler(ev);
       expect(ev.effect).toBe("allow");
       expect(ev.message).toBeUndefined();
+    });
+  });
+
+  // ── v2 plugin echo option (per-location, env-wins) ──────────
+
+  describe("v2 plugin echo option (per-location threading, env wins)", () => {
+    const ECHO_PROBE = "echo-loc-probe-marker";
+
+    async function runEchoProbe(host: V2Host, projectDir: string): Promise<string> {
+      const tool = host.addedTools.get("ctx_execute");
+      const result = (await tool.execute(
+        { language: "shell", code: `echo ${ECHO_PROBE}` },
+        { directory: projectDir, sessionID: "echo-probe" },
+      )) as { content: string };
+      return result.content;
+    }
+
+    function restoreEchoEnv(prev: string | undefined): void {
+      if (prev === undefined) delete process.env.CONTEXT_MODE_ECHO;
+      else process.env.CONTEXT_MODE_ECHO = prev;
+    }
+
+    it("one location's {echo:true} never leaks into another location's calls", async () => {
+      const prev = process.env.CONTEXT_MODE_ECHO;
+      delete process.env.CONTEXT_MODE_ECHO;
+      let cleanupA: (() => void) | undefined;
+      let cleanupB: (() => void) | undefined;
+      try {
+        const dirA = join(tempDir, "echo-loc-a");
+        const dirB = join(tempDir, "echo-loc-b");
+        mkdirSync(dirA, { recursive: true });
+        mkdirSync(dirB, { recursive: true });
+        const hostA = makeV2Ctx(dirA);
+        const hostB = makeV2Ctx(dirB);
+        hostA.ctx.options = { echo: true };
+        const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+        cleanupA = (await ContextModeSetup(hostA.ctx as any)) as () => void;
+        cleanupB = (await ContextModeSetup(hostB.ctx as any)) as () => void;
+
+        const outA = await runEchoProbe(hostA, dirA);
+        const outB = await runEchoProbe(hostB, dirB);
+        expect(outA).toContain(ECHO_PROBE);
+        expect(outA).toContain("```shell");
+        expect(outB).toContain(ECHO_PROBE);
+        expect(outB).not.toContain("```shell");
+        expect(process.env.CONTEXT_MODE_ECHO).toBeUndefined();
+      } finally {
+        cleanupA?.();
+        cleanupB?.();
+        restoreEchoEnv(prev);
+      }
+    });
+
+    it("removing the option on reload disables echoes (no env residue)", async () => {
+      const prev = process.env.CONTEXT_MODE_ECHO;
+      delete process.env.CONTEXT_MODE_ECHO;
+      let cleanup1: (() => void) | undefined;
+      let cleanup2: (() => void) | undefined;
+      try {
+        const dir = join(tempDir, "echo-reload");
+        mkdirSync(dir, { recursive: true });
+        const host1 = makeV2Ctx(dir);
+        host1.ctx.options = { echo: true };
+        const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+        cleanup1 = (await ContextModeSetup(host1.ctx as any)) as () => void;
+        expect(await runEchoProbe(host1, dir)).toContain("```shell");
+
+        // Reload: plugin re-runs setup with the option removed
+        const host2 = makeV2Ctx(dir);
+        cleanup2 = (await ContextModeSetup(host2.ctx as any)) as () => void;
+        expect(await runEchoProbe(host2, dir)).not.toContain("```shell");
+        expect(process.env.CONTEXT_MODE_ECHO).toBeUndefined();
+      } finally {
+        cleanup1?.();
+        cleanup2?.();
+        restoreEchoEnv(prev);
+      }
+    });
+
+    it("unsuccessful setup with {echo:true} leaves no sticky echo state", async () => {
+      const prev = process.env.CONTEXT_MODE_ECHO;
+      delete process.env.CONTEXT_MODE_ECHO;
+      let cleanup: (() => void) | undefined;
+      try {
+        const dir = join(tempDir, "echo-fail-setup");
+        const host = makeV2Ctx(dir, {
+          hookImpl: async () => {
+            throw new Error("tool hook surface broken");
+          },
+        });
+        host.ctx.options = { echo: true };
+        const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+        cleanup = (await ContextModeSetup(host.ctx as any)) as (() => void) | undefined;
+
+        expect(process.env.CONTEXT_MODE_ECHO).toBeUndefined();
+        // Native tools were torn down with the failed setup
+        expect(host.addedTools.size).toBe(0);
+        // The activation claim was released — nothing sticky remains
+        const registry = await getActivationRegistry();
+        expect([...registry.keys()].some((k) => k.includes("echo-fail-setup"))).toBe(false);
+      } finally {
+        cleanup?.();
+        restoreEchoEnv(prev);
+      }
+    });
+
+    it("explicit CONTEXT_MODE_ECHO wins over the plugin option (unset enables; ''/'0'/'false' disable)", async () => {
+      const prev = process.env.CONTEXT_MODE_ECHO;
+      delete process.env.CONTEXT_MODE_ECHO;
+      let cleanup: (() => void) | undefined;
+      try {
+        const dir = join(tempDir, "echo-env-wins");
+        mkdirSync(dir, { recursive: true });
+        const host = makeV2Ctx(dir);
+        host.ctx.options = { echo: true };
+        const { ContextModeSetup } = await import("../src/adapters/opencode/plugin.js");
+        cleanup = (await ContextModeSetup(host.ctx as any)) as () => void;
+
+        expect(await runEchoProbe(host, dir)).toContain("```shell");
+        for (const v of ["", "0", "false"]) {
+          process.env.CONTEXT_MODE_ECHO = v;
+          expect(await runEchoProbe(host, dir), `env=${JSON.stringify(v)}`).not.toContain("```shell");
+        }
+      } finally {
+        restoreEchoEnv(prev);
+        cleanup?.();
+      }
     });
   });
 });
